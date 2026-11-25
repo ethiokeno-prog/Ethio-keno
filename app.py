@@ -13,6 +13,7 @@ WEBAPP_URL = (os.environ.get("WEBAPP_URL") or "https://ethio-keno-exlm.onrender.
 
 EAT = timezone(timedelta(hours=3))
 USERS, USED_TX, WITHDRAWALS = {}, set(), {}
+LIVE_TICKETS = []
 PAYTABLE = {
     1: {1: 3.5}, 2: {1: 1, 2: 9}, 3: {2: 2.5, 3: 25}, 4: {2: 1.5, 3: 5, 4: 60},
     5: {3: 2, 4: 12, 5: 150}, 6: {3: 1.5, 4: 5, 5: 25, 6: 300},
@@ -23,6 +24,10 @@ PAYTABLE = {
 
 def is_wd_hours():
     return 8 <= datetime.now(EAT).hour < 21
+
+def mask_uid(uid):
+    s = str(uid)
+    return s if len(s) <= 3 else f"{s[0]}***{s[-1]}"
 
 def get_u(uid):
     new = uid not in USERS
@@ -86,6 +91,16 @@ PAGE = f"""<!DOCTYPE html>
 .val{{background:#181b21;border:1px solid #374151;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800}}
 .betbtn{{width:100%;height:40px;border:none;border-radius:9px;background:#22c55e;color:#061209;font-weight:900;font-size:15px}}
 .box{{margin:8px 12px;padding:10px;border-radius:10px;background:#1a1e26;border:1px solid #2b313d;font-size:12px;line-height:1.45}}
+.tcard{{background:#141820;border:1px solid #262c38;border-left:4px solid #22c55e;border-radius:8px;padding:8px;margin-top:6px}}
+.tcard-top{{display:flex;justify-content:space-between;font-size:11px;color:#9ca3af;margin-bottom:6px}}
+.tnums{{display:flex;flex-wrap:wrap;gap:5px}}
+.tnum{{min-width:26px;height:26px;line-height:24px;padding:0 5px;border-radius:6px;background:#16a34a;color:#052e16;font-weight:900;font-size:12px;text-align:center}}
+.tnum.matched{{background:#22c55e;color:#042f14;box-shadow:0 0 0 2px #86efac}}
+.modal-bg{{position:fixed;inset:0;background:rgba(0,0,0,0.68);display:none;align-items:center;justify-content:center;z-index:99;padding:16px}}
+.modal-bg.open{{display:flex}}
+.modal-box{{width:100%;max-width:320px;background:#191d24;border:1px solid #374151;border-radius:12px;padding:14px;text-align:center}}
+.modal-top{{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}}
+.modal-x{{background:none;border:none;color:#9ca3af;font-size:18px;font-weight:900}}
 .panel{{display:none;padding:10px}}.panel.active{{display:block}}
 input,select{{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1px solid #374151;background:#111317;color:#fff}}
 .act{{width:100%;padding:10px;border:none;border-radius:8px;font-weight:800;color:#fff;background:#16a34a}}
@@ -112,6 +127,24 @@ input,select{{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1
     <button class="betbtn" id="betbtn" onclick="lockBet()">BET</button>
   </div>
   <div class="box" id="gmsg">የመምረጫ ሰዓት 1 ደቂቃ ነው። ቁጥር (1-10) እና መደብ (ቢያንስ 10 ETB) መርጠው BET ይጫኑ ወይም 01:00 ሲያልቅ ቁጥሮች ይወጣሉ።</div>
+  <div class="box">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <strong>🎟️ የተቆረጡ መደቦች (Active Tickets)</strong>
+      <span id="tcount" style="color:#4ade80;font-weight:800">0</span>
+    </div>
+    <div id="tickets-list"><div style="color:#9ca3af;margin-top:6px">በዚህ ዙር የተቆረጠ መደብ የለም።</div></div>
+  </div>
+</div>
+
+<div id="insuf-modal" class="modal-bg" onclick="closeInsuf()">
+  <div class="modal-box" onclick="event.stopPropagation()">
+    <div class="modal-top">
+      <span style="color:#f87171;font-weight:900;font-size:14px">INSUFFICIENT FUNDS.</span>
+      <button class="modal-x" onclick="closeInsuf()">✕</button>
+    </div>
+    <div style="font-size:12px;color:#d1d5db;margin-bottom:10px">ባላንስዎ በቂ አይደለም። እባክዎ ገቢ (Deposit) ያድርጉ ወይም መደብ ይቀንሱ።</div>
+    <button class="act" onclick="closeInsuf();tab('wallet')">ወደ WALLET ሂድ</button>
+  </div>
 </div>
 
 <div id="p-wallet" class="panel">
@@ -157,34 +190,57 @@ input,select{{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1
 const tg=window.Telegram&&window.Telegram.WebApp?window.Telegram.WebApp:null; if(tg)tg.expand();
 const uid=tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?String(tg.initDataUnsafe.user.id):"895515150";
 const PT={{1:{{1:3.5}},2:{{1:1,2:9}},3:{{2:2.5,3:25}},4:{{2:1.5,3:5,4:60}},5:{{3:2,4:12,5:150}},6:{{3:1.5,4:5,5:25,6:300}},7:{{3:1,4:3,5:12,6:80,7:500}},8:{{4:2,5:8,6:30,7:150,8:1000}},9:{{4:1.5,5:5,6:20,7:75,8:300,9:1500}},10:{{5:3,6:15,7:50,8:200,9:800,10:2500}}}};
-let bal=10,bet=10,drawing=false,roundSec=60,queued=null; const picks=new Set();
+let bal=10,bet=10,drawing=false,roundSec=60,queued=null,tickets=[],drawnSoFar=new Set(); const picks=new Set();
 const g=document.getElementById("grid");
 for(let i=1;i<=80;i++){{const b=document.createElement("button");b.className="t";b.dataset.n=i;b.textContent=i;
 b.onclick=()=>{{if(drawing)return;if(picks.has(i)){{picks.delete(i);b.classList.remove("sel")}}else{{if(picks.size>=10)return alert("ከ10 በላይ አይቻልም");picks.add(i);b.classList.add("sel")}}ui()}};g.appendChild(b)}}
+function showInsuf(){{document.getElementById("insuf-modal").classList.add("open")}}
+function closeInsuf(){{document.getElementById("insuf-modal").classList.remove("open")}}
 function ui(){{document.getElementById("cnt").textContent=picks.size;document.getElementById("bval").textContent=bet;
 const t=PT[picks.size]||{{}};const mx=Math.max(0,...Object.values(t));document.getElementById("mwin").textContent=(bet*mx).toFixed(2)+" ETB"}}
 function sbet(d){{if(!drawing){{bet=Math.max(10,bet+d);ui()}}}}
 function tab(k){{["game","wallet","hist"].forEach(x=>{{document.getElementById("p-"+x).classList.toggle("active",x===k);document.getElementById("n-"+x).classList.toggle("active",x===k)}});load()}}
 function toggleDepMode(){{const m=document.getElementById("dmode").value;document.getElementById("d-code-wrap").style.display=m==="code"?"block":"none";document.getElementById("d-shot-wrap").style.display=m==="shot"?"block":"none"}}
-async function load(){{const r=await fetch(`/api/state?uid=${{uid}}`);const d=await r.json();bal=d.balance;document.getElementById("bal").textContent=bal.toFixed(2);
+function renderTickets(){{
+  const wrap=document.getElementById("tickets-list");
+  document.getElementById("tcount").textContent=tickets.length;
+  if(!tickets.length){{wrap.innerHTML='<div style="color:#9ca3af;margin-top:6px">በዚህ ዙር የተቆረጠ መደብ የለም።</div>';return}}
+  wrap.innerHTML=tickets.map(tk=>`
+    <div class="tcard">
+      <div class="tcard-top"><span><b>${{tk.player}}</b></span><span>Bet: <b style="color:#4ade80">${{Number(tk.bet).toFixed(2)}} ETB</b></span></div>
+      <div class="tnums">${{tk.picks.map(n=>`<span class="tnum${{drawnSoFar.has(n)?" matched":""}}">${{n}}</span>`).join("")}}</div>
+    </div>`).join("");
+}}
+async function load(){{const r=await fetch(`/api/state?uid=${{uid}}`);const d=await r.json();bal=d.balance;tickets=d.tickets||[];document.getElementById("bal").textContent=bal.toFixed(2);renderTickets();
 document.getElementById("hlist").innerHTML=d.bets.length?d.bets.slice().reverse().map(x=>`<div>Bet:${{x.bet}} | Hits:${{x.matches}} | Win:${{x.payout}} ETB</div>`).join(""):"ምንም ታሪክ የለም።";
 document.getElementById("wlist").innerHTML=d.wds.length?d.wds.slice().reverse().map(w=>`<div style="padding:5px 0;border-bottom:1px solid #2b303b">${{w.id}} | ${{w.method}} (${{w.dest}}) | ${{w.amount}} ETB | <b>${{w.status}}</b>${{d.is_admin&&w.status==="Pending"?`<br><button class="appb" onclick="appw('${{w.id}}')">Approve (Completed)</button>`:""}}</div>`).join(""):"ምንም ጥያቄ የለም።"}}
 function clearSelectionsAndBoard(){{picks.clear();document.querySelectorAll(".t").forEach(x=>x.classList.remove("sel","hit","miss"));ui()}}
-function resetDrawStage(){{document.querySelectorAll(".t").forEach(x=>x.classList.remove("hit","miss"));document.getElementById("strip").innerHTML="";document.getElementById("dprog").textContent="0 / 20";document.getElementById("ball").textContent="--";const bn=document.getElementById("out-banner");bn.className="banner";bn.textContent=""}}
-function lockBet(){{if(drawing)return;if(!picks.size)return alert("ቢያንስ 1 ቁጥር ምረጥ");if(bet<10)return alert("ዝቅተኛ መደብ 10 ETB ነው");if(bet>bal)return alert("በቂ ባላንስ የለህም።");
-queued={{picks:Array.from(picks),bet}};document.getElementById("gmsg").textContent=`✅ መደብ (${{bet}} ETB) ተይዟል (${{queued.picks.length}} ቁጥር)። ዙሩ ሲያልቅ 20 ቁጥሮች ይወጣሉ።`}}
+function resetDrawStage(){{drawnSoFar.clear();document.querySelectorAll(".t").forEach(x=>x.classList.remove("hit","miss"));document.getElementById("strip").innerHTML="";document.getElementById("dprog").textContent="0 / 20";document.getElementById("ball").textContent="--";const bn=document.getElementById("out-banner");bn.className="banner";bn.textContent=""}}
+async function lockBet(){{
+  if(drawing)return;
+  if(!picks.size)return alert("ቢያንስ 1 ቁጥር ምረጥ");
+  if(bet<10)return alert("ዝቅተኛ መደብ 10 ETB ነው");
+  if(bal<=0||bet>bal)return showInsuf();
+  const r=await fetch("/api/reserve_bet",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{uid,picks:Array.from(picks),bet}})}});
+  const d=await r.json();
+  if(!d.ok){{if(d.insufficient)return showInsuf();return alert(d.msg)}}
+  bal=d.balance;document.getElementById("bal").textContent=bal.toFixed(2);tickets=d.tickets||tickets;renderTickets();
+  queued={{picks:Array.from(picks),bet}};
+  document.getElementById("gmsg").textContent=`✅ መደብ (${{bet}} ETB) ተይዟል (${{queued.picks.length}} ቁጥር)። ዙሩ ሲያልቅ 20 ቁጥሮች ይወጣሉ።`;
+}}
 async function runRoundDraw(){{
   if(drawing)return; drawing=true; resetDrawStage();
   const activeBet=queued; queued=null;
-  const r=await fetch("/api/play",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{uid,picks:activeBet?activeBet.picks:[],bet:activeBet?activeBet.bet:0}})}});
+  const r=await fetch("/api/play",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{uid,picks:activeBet?activeBet.picks:[],bet:activeBet?activeBet.bet:0,already_deducted:Boolean(activeBet)}})}});
   const d=await r.json();
   const watched=new Set(activeBet?activeBet.picks:[]);
   for(let i=0;i<d.drawn.length;i++){{
-    const n=d.drawn[i]; const isHit=watched.has(n);
+    const n=d.drawn[i]; const isHit=watched.has(n); drawnSoFar.add(n);
     document.getElementById("ball").textContent=n;
     document.getElementById("dprog").textContent=`${{i+1}} / 20`;
     const ch=document.createElement("span");ch.className="chip"+(isHit?" h":"");ch.textContent=n;document.getElementById("strip").appendChild(ch);
     const el=document.querySelector(`.t[data-n="${{n}}"]`);if(el)el.classList.add(isHit?"hit":"miss");
+    renderTickets();
     await new Promise(res=>setTimeout(res,2000));
   }}
   const bn=document.getElementById("out-banner");
@@ -250,7 +306,22 @@ def api_state():
     uid = str(request.args.get("uid", "895515150")).strip()
     u, _ = get_u(uid)
     adm = bool(ADMIN_CHAT_ID and uid == ADMIN_CHAT_ID)
-    return jsonify({"balance": u["balance"], "bets": u["bets"][-20:], "wds": list(WITHDRAWALS.values()) if adm else u["wds"], "is_admin": adm})
+    return jsonify({"balance": u["balance"], "bets": u["bets"][-20:], "tickets": LIVE_TICKETS[-25:], "wds": list(WITHDRAWALS.values()) if adm else u["wds"], "is_admin": adm})
+
+@app.route("/api/reserve_bet", methods=["POST"])
+def api_reserve_bet():
+    d = request.get_json(force=True)
+    uid = str(d.get("uid", "895515150")).strip()
+    picks = sorted(list({int(x) for x in (d.get("picks") or []) if 1 <= int(x) <= 80}))
+    bet = float(d.get("bet", 0) or 0)
+    u, _ = get_u(uid)
+    if not (1 <= len(picks) <= 10) or bet < 10:
+        return jsonify({"ok": False, "msg": "ከ1-10 ቁጥር እና ቢያንስ 10 ETB ይምረጡ።"})
+    if u["balance"] <= 0 or bet > u["balance"]:
+        return jsonify({"ok": False, "insufficient": True, "msg": "INSUFFICIENT FUNDS."})
+    u["balance"] = round(u["balance"] - bet, 2)
+    LIVE_TICKETS.append({"player": mask_uid(uid), "picks": picks, "bet": bet})
+    return jsonify({"ok": True, "balance": u["balance"], "tickets": LIVE_TICKETS[-25:]})
 
 @app.route("/api/play", methods=["POST"])
 def api_play():
@@ -258,17 +329,23 @@ def api_play():
     uid = str(d.get("uid", "895515150")).strip()
     picks = [int(x) for x in (d.get("picks") or [])]
     bet = float(d.get("bet", 0) or 0)
+    already = bool(d.get("already_deducted"))
     u, _ = get_u(uid)
     drawn = random.sample(range(1, 81), 20)
     if not picks or bet < 10:
+        LIVE_TICKETS.clear()
         return jsonify({"ok": True, "balance": u["balance"], "drawn": drawn, "hits": [], "matches": 0, "payout": 0.0})
-    if not (1 <= len(picks) <= 10) or bet > u["balance"]:
-        return jsonify({"ok": False, "msg": "በቂ ባላንስ የለህም ወይም ምርጫው ከ1-10 አይደለም።"})
-    u["balance"] = round(u["balance"] - bet, 2)
+    if not (1 <= len(picks) <= 10):
+        return jsonify({"ok": False, "msg": "ምርጫው ከ1-10 መሆን አለበት።"})
+    if not already:
+        if u["balance"] <= 0 or bet > u["balance"]:
+            return jsonify({"ok": False, "insufficient": True, "msg": "INSUFFICIENT FUNDS."})
+        u["balance"] = round(u["balance"] - bet, 2)
     hits = sorted([x for x in picks if x in set(drawn)])
     payout = round(bet * PAYTABLE.get(len(picks), {}).get(len(hits), 0.0), 2)
     u["balance"] = round(u["balance"] + payout, 2)
     u["bets"].append({"bet": bet, "matches": len(hits), "payout": payout})
+    LIVE_TICKETS.clear()
     return jsonify({"ok": True, "balance": u["balance"], "drawn": drawn, "hits": hits, "matches": len(hits), "payout": payout})
 
 @app.route("/api/deposit", methods=["POST"])
