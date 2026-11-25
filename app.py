@@ -8,8 +8,7 @@ app = Flask(__name__)
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "9035872179:AAFgRGORn5ghA5iI6OfmvgjtN2YCYUZ45-g").strip()
 ADMIN_CHAT_ID = (os.environ.get("ADMIN_CHAT_ID") or "874411134").strip()
 PAYOUT_CHAT_ID = (os.environ.get("PAYOUT_CHAT_ID") or "").strip()
-PAYOUT_USERNAME = (os.environ.get("PAYOUT_USERNAME") or "@ethio_keno_26").strip()
-PAYOUT_PHONE = (os.environ.get("PAYOUT_PHONE") or "+251 97 821 4144").strip()
+SUPPORT_HANDLE = (os.environ.get("SUPPORT_HANDLE") or "").strip().lstrip("@")
 TELEBIRR_ACCOUNT = (os.environ.get("TELEBIRR_ACCOUNT") or "0944123180 - Enyachew Amerga").strip()
 CBE_ACCOUNT = (os.environ.get("CBE_ACCOUNT") or "1000682528641 - Enyachew Amerga").strip()
 WEBAPP_URL = (os.environ.get("WEBAPP_URL") or "").strip().rstrip("/")
@@ -39,26 +38,56 @@ def mask_uid(uid):
     return s if len(s) <= 3 else f"{s[0]}***{s[-1]}"
 
 def get_u(uid):
-    new = uid not in USERS
-    if new:
-        USERS[uid] = {"balance": 10.0, "wds": [], "bets": []}
-    return USERS[uid], new
+    uid = str(uid)
+    if uid not in USERS:
+        USERS[uid] = {
+            "registered": False,
+            "bonus_claimed": False,
+            "balance": 0.0,
+            "wds": [],
+            "bets": [],
+        }
+    return USERS[uid]
 
-def tg(chat_id, text, kb=None):
+def main_reply_kb(uid, base_url):
+    app_url = f"{base_url}/?uid={uid}"
+    return {
+        "keyboard": [
+            [{"text": "🎮 Play", "web_app": {"url": app_url}}],
+            [{"text": "✉️ Invite Friends"}, {"text": "🆘 Support"}],
+        ],
+        "resize_keyboard": True,
+    }
+
+def tg(chat_id, text, kb=None, parse_mode=None):
     if not BOT_TOKEN or not chat_id:
         return False
     p = {"chat_id": chat_id, "text": text}
     if kb:
         p["reply_markup"] = kb
+    if parse_mode:
+        p["parse_mode"] = parse_mode
     try:
         r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=p, timeout=12)
         return r.ok
     except Exception:
         return False
 
-def notify_payout_targets(text):
+def tg_answer_cb(cb_id, text):
+    if not BOT_TOKEN or not cb_id:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
+            json={"callback_query_id": cb_id, "text": text, "show_alert": False},
+            timeout=8,
+        )
+    except Exception:
+        pass
+
+def notify_internal(text):
     targets = []
-    for cid in [PAYOUT_CHAT_ID, ADMIN_CHAT_ID]:
+    for cid in [ADMIN_CHAT_ID, PAYOUT_CHAT_ID]:
         if cid and cid not in targets:
             targets.append(cid)
     return any(tg(cid, text) for cid in targets)
@@ -130,11 +159,11 @@ PAGE = f"""<!DOCTYPE html>
 .panel{{display:none;padding:10px}}.panel.active{{display:block}}
 input,select{{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1px solid #374151;background:#111317;color:#fff}}
 .act{{width:100%;padding:10px;border:none;border-radius:8px;font-weight:800;color:#fff;background:#16a34a}}
-.amb{{background:#d97706}}.appb{{background:#2563eb;color:#fff;border:none;padding:5px 9px;border-radius:6px;margin-top:5px}}
+.amb{{background:#d97706}}.appb{{background:#16a34a;color:#fff;border:none;padding:6px 12px;border-radius:6px;margin-top:6px;font-weight:800}}
 .nav{{position:fixed;bottom:0;left:0;right:0;height:54px;background:#161a21;border-top:1px solid #262c36;display:grid;grid-template-columns:repeat(3,1fr)}}
 .nb{{background:none;border:none;color:#9ca3af;font-weight:700;font-size:11px}}.nb.active{{color:#4ade80}}
 </style></head><body>
-<div class="top"><strong style="color:#4ade80">⚡ FAST KENO</strong><div class="pill">ባላንስ: <span id="bal">10.00</span> ETB</div></div>
+<div class="top"><strong style="color:#4ade80">⚡ FAST KENO</strong><div class="pill">ባላንስ: <span id="bal">0.00</span> ETB</div></div>
 <div class="sub"><div>ምርጫ: <strong id="cnt">0</strong>/10 | ID: <strong id="uid-lbl">-</strong></div><div class="tm" id="tm">01:00</div></div>
 
 <div id="p-game" class="panel active">
@@ -195,7 +224,6 @@ input,select{{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1
   </div>
   <div class="box">
     <strong>💸 Withdraw (ከጠዋት 2:00 - ማታ 3:00 ብቻ)</strong><br>
-    <span style="color:#93c5fd">Payout Account: <b>{PAYOUT_USERNAME}</b> ({PAYOUT_PHONE})</span>
     <input type="number" id="wa" placeholder="የሚወጣውን Amount ይጻፉ" value="10">
     <select id="wm"><option value="Telebirr">Telebirr</option><option value="CBE">CBE</option></select>
     <input type="text" id="wd" placeholder="የቴሌብር ስልክ ወይም የCBE አካውንት">
@@ -219,7 +247,7 @@ const params=new URLSearchParams(window.location.search);
 const uid=params.get("uid")||(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?String(tg.initDataUnsafe.user.id):"874411134");
 document.getElementById("uid-lbl").textContent=uid;
 const PT={{1:{{1:3.5}},2:{{2:10}},3:{{2:1.5,3:50}},4:{{2:1,3:10,4:80}},5:{{3:2,4:15,5:150}},6:{{3:1.5,4:4,5:60,6:500}},7:{{3:1,4:3,5:15,6:80,7:1000}},8:{{4:2,5:10,6:25,7:200,8:2000}},9:{{4:2,5:5,6:15,7:125,8:800,9:5000}},10:{{5:2,6:10,7:30,8:100,9:1000,10:10000}}}};
-let bal=10,bet=10,drawing=false,roundSec=60,queued=null,tickets=[],drawnSoFar=new Set(),roundDone=false; const picks=new Set();
+let bal=0,bet=10,drawing=false,roundSec=60,queued=null,tickets=[],drawnSoFar=new Set(),roundDone=false; const picks=new Set();
 const g=document.getElementById("grid");
 for(let i=1;i<=80;i++){{const b=document.createElement("button");b.className="t";b.dataset.n=i;b.textContent=i;
 b.onclick=()=>{{if(drawing)return;if(picks.has(i)){{picks.delete(i);b.classList.remove("sel")}}else{{if(picks.size>=10)return alert("ከ10 በላይ አይቻልም");picks.add(i);b.classList.add("sel")}}ui()}};g.appendChild(b)}}
@@ -249,7 +277,7 @@ function renderTickets(){{
 }}
 async function load(){{const r=await fetch(`/api/state?uid=${{encodeURIComponent(uid)}}`);const d=await r.json();bal=d.balance;if(!drawing){{tickets=d.tickets||[];roundDone=false}}document.getElementById("bal").textContent=bal.toFixed(2);renderTickets();
 document.getElementById("hlist").innerHTML=d.bets.length?d.bets.slice().reverse().map(x=>`<div>Bet:${{x.bet}} | Hits:${{x.matches}} | Win:${{x.payout}} ETB</div>`).join(""):"ምንም ታሪክ የለም።";
-document.getElementById("wlist").innerHTML=d.wds.length?d.wds.slice().reverse().map(w=>`<div style="padding:5px 0;border-bottom:1px solid #2b303b">${{w.id}} | ${{w.method}} (${{w.dest}}) | ${{w.amount}} ETB | <b>${{w.status}}</b>${{d.is_admin&&w.status==="Pending"?`<br><button class="appb" onclick="appw('${{w.id}}')">Approve (Completed)</button>`:""}}</div>`).join(""):"ምንም ጥያቄ የለም።"}}
+document.getElementById("wlist").innerHTML=d.wds.length?d.wds.slice().reverse().map(w=>`<div style="padding:6px 0;border-bottom:1px solid #2b303b">${{w.id}} | ${{w.method}} (${{w.dest}}) | ${{w.amount}} ETB | <b>${{w.status}}</b>${{w.status==="Pending"?`<br><button class="appb" onclick="appw('${{w.id}}')">Complete</button>`:""}}</div>`).join(""):"ምንም ጥያቄ የለም።"}}
 function clearSelectionsAndBoard(){{picks.clear();document.querySelectorAll(".t").forEach(x=>x.classList.remove("sel","hit","miss"));ui()}}
 function resetDrawStage(){{drawnSoFar.clear();roundDone=false;document.querySelectorAll(".t").forEach(x=>x.classList.remove("hit","miss"));document.getElementById("strip").innerHTML="";document.getElementById("dprog").textContent="0 / 20";document.getElementById("ball").textContent="--";const bn=document.getElementById("out-banner");bn.className="banner";bn.textContent=""}}
 async function lockBet(){{
@@ -332,28 +360,123 @@ def set_my_webhook():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     upd = request.get_json(silent=True) or {}
+    base_url = current_base_url()
+
+    cb = upd.get("callback_query")
+    if cb:
+        cb_id = str(cb.get("id", "")).strip()
+        data = str(cb.get("data", "")).strip()
+        from_user = cb.get("from") or {}
+        uid = str(from_user.get("id", "")).strip()
+        if data == "register_bonus" and uid:
+            u = get_u(uid)
+            if not u["registered"]:
+                u["registered"] = True
+                if not u["bonus_claimed"]:
+                    u["bonus_claimed"] = True
+                    u["balance"] = round(u["balance"] + 10.0, 2)
+                tg_answer_cb(cb_id, "ምዝገባ ተጠናቋል! 10 ETB ቦነስ ተሰጥቶሃል።")
+                tg(
+                    uid,
+                    f"✅ ምዝገባዎ በተሳካ ሁኔታ ተጠናቋል!\n🎁 የ10.00 ETB ቦነስ ተሰጥቶዎታል (አንድ ጊዜ ብቻ)።\n💰 ባላንስዎ: {u['balance']:.2f} ETB",
+                    main_reply_kb(uid, base_url),
+                )
+            else:
+                tg_answer_cb(cb_id, "ቀድሞ ተመዝግበዋል (ቦነስ አንድ ጊዜ ብቻ ነው)።")
+                tg(
+                    uid,
+                    f"ℹ️ ቀድሞ ተመዝግበዋል። ቦነስ የሚሰጠው አንድ ጊዜ ብቻ ነው።\n💰 ባላንስዎ: {u['balance']:.2f} ETB",
+                    main_reply_kb(uid, base_url),
+                )
+        return jsonify({"ok": True})
+
     msg = upd.get("message") or upd.get("edited_message") or {}
     text = (msg.get("text") or "").strip()
     chat = msg.get("chat") or {}
     uid = str(chat.get("id", "")).strip()
-    if uid and text.startswith("/start"):
-        u, is_new = get_u(uid)
-        btxt = "🎁 አዲስ ተመዝጋቢ ስለሆንክ 10.00 ETB ቦነስ ተሰጥቶሃል!\n" if is_new else ""
-        url = f"{current_base_url()}/?uid={uid}"
-        sent = tg(
+    if not uid or not text:
+        return jsonify({"ok": True})
+
+    u = get_u(uid)
+    if text.startswith("/start"):
+        if not u["registered"]:
+            tg(
+                uid,
+                "ሰላም! Support Team እንኳን በደህና መጡ።\n\n"
+                "ለመጀመር በቴሌግራምዎ ይመዝገቡ። ሲመዘገቡ አንድ ጊዜ ብቻ 10.00 ETB ቦነስ ያገኛሉ።",
+                {
+                    "inline_keyboard": [
+                        [{"text": "✅ ተመዝገብ እና 10 ETB ቦነስ ውሰድ", "callback_data": "register_bonus"}]
+                    ]
+                },
+            )
+        else:
+            tg(
+                uid,
+                f"ሰላም! Support Team እንኳን በደህና መጡ።\n💰 ባላንስዎ: {u['balance']:.2f} ETB",
+                main_reply_kb(uid, base_url),
+            )
+        return jsonify({"ok": True})
+
+    if text in ("🎮 Play", "Play", "Play Games"):
+        if not u["registered"]:
+            tg(
+                uid,
+                "እባክዎ መጀመሪያ ይመዝገቡ።",
+                {"inline_keyboard": [[{"text": "✅ ተመዝገብ እና 10 ETB ቦነስ ውሰድ", "callback_data": "register_bonus"}]]},
+            )
+        else:
+            tg(
+                uid,
+                f"🎮 ለመጫወት ከታች ያለውን Play ቁልፍ ይጫኑ።\n💰 ባላንስዎ: {u['balance']:.2f} ETB",
+                main_reply_kb(uid, base_url),
+            )
+        return jsonify({"ok": True})
+
+    if text in ("✉️ Invite Friends", "Invite Friends"):
+        bot_info_user = ""
+        try:
+            me = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=8).json()
+            if me.get("ok"):
+                bot_info_user = (me.get("result") or {}).get("username") or ""
+        except Exception:
+            pass
+        ref_link = f"https://t.me/{bot_info_user}?start={uid}" if bot_info_user else f"{base_url}/?ref={uid}"
+        tg(
             uid,
-            f"እንኳን ወደ FAST KENO በደህና መጡ!\n{btxt}ባላንስዎ: {u['balance']:.2f} ETB",
-            {"inline_keyboard": [[{"text": "⚡ Play FAST KENO", "web_app": {"url": url}}]]},
+            f"👥 ጓደኞችዎን ይጋብዙ!\nየግብዣ ሊንክዎ:\n{ref_link}",
+            main_reply_kb(uid, base_url),
         )
-        return jsonify({"ok": True, "sent": sent})
+        return jsonify({"ok": True})
+
+    if text in ("🆘 Support", "Support"):
+        sup_line = f"\nቀጥታ Support: @{SUPPORT_HANDLE}" if SUPPORT_HANDLE else ""
+        tg(
+            uid,
+            f"🆘 Support Team:\nማንኛውንም ጥያቄ ወይም እርዳታ እዚህ መልዕክት ይጻፉ፤ Support Team ይመልስልዎታል።{sup_line}",
+            main_reply_kb(uid, base_url),
+        )
+        return jsonify({"ok": True})
+
+    if u["registered"] and not text.startswith("/"):
+        notify_internal(f"💬 Support Message\nCustomer ID: {uid}\nMessage: {text}")
+        tg(uid, "✅ መልዕክትዎ ወደ Support Team ደርሷል፤ በቅርቡ ምላሽ ይሰጥዎታል።", main_reply_kb(uid, base_url))
+
     return jsonify({"ok": True})
 
 @app.route("/api/state")
 def api_state():
     uid = str(request.args.get("uid", "874411134")).strip()
-    u, _ = get_u(uid)
+    u = get_u(uid)
     adm = bool(ADMIN_CHAT_ID and uid == ADMIN_CHAT_ID)
-    return jsonify({"balance": u["balance"], "bets": u["bets"][-20:], "tickets": LIVE_TICKETS[-25:], "wds": list(WITHDRAWALS.values()) if adm else u["wds"], "is_admin": adm})
+    return jsonify({
+        "balance": u["balance"],
+        "registered": u["registered"],
+        "bets": u["bets"][-20:],
+        "tickets": LIVE_TICKETS[-25:],
+        "wds": list(WITHDRAWALS.values()) if adm else u["wds"],
+        "is_admin": adm,
+    })
 
 @app.route("/api/reserve_bet", methods=["POST"])
 def api_reserve_bet():
@@ -361,7 +484,7 @@ def api_reserve_bet():
     uid = str(d.get("uid", "874411134")).strip()
     picks = sorted(list({int(x) for x in (d.get("picks") or []) if 1 <= int(x) <= 80}))
     bet = float(d.get("bet", 0) or 0)
-    u, _ = get_u(uid)
+    u = get_u(uid)
     if not (1 <= len(picks) <= 10) or bet < 10:
         return jsonify({"ok": False, "msg": "ከ1-10 ቁጥር እና ቢያንስ 10 ETB ይምረጡ።"})
     if u["balance"] <= 0 or bet > u["balance"]:
@@ -377,7 +500,7 @@ def api_play():
     picks = [int(x) for x in (d.get("picks") or [])]
     bet = float(d.get("bet", 0) or 0)
     already = bool(d.get("already_deducted"))
-    u, _ = get_u(uid)
+    u = get_u(uid)
     drawn = random.sample(range(1, 81), 20)
     drawn_set = set(drawn)
     for tk in LIVE_TICKETS:
@@ -419,12 +542,12 @@ def api_deposit():
             img_bytes = base64.b64decode(raw_b64)
         except Exception:
             return jsonify({"ok": False, "msg": "የስክሪንሻት ፋይል ማንበብ አልተቻለም።"})
-        tg_photo(ADMIN_CHAT_ID, img_bytes, f"📸 Deposit Screenshot\nUser: {uid}\nBank: {m}\nAmount: {amt:.2f} ETB")
+        tg_photo(ADMIN_CHAT_ID, img_bytes, f"📸 Deposit Screenshot\nCustomer ID: {uid}\nBank: {m}\nAmount: {amt:.2f} ETB")
         return jsonify({"ok": True, "msg": f"📸 የ {amt:.2f} ETB ({m}) ስክሪንሻት ተልኳል፤ እባክህ አረጋግጥ።"})
     if not valid_tx(m, tx):
         return jsonify({"ok": False, "msg": "❌ ስህተት ነው፤ ይህ የ FT / Transaction ኮድ የለም ወይም ቀድሞ ተጠቅሟል።"})
     USED_TX.add(tx)
-    u, _ = get_u(uid)
+    u = get_u(uid)
     u["balance"] = round(u["balance"] + amt, 2)
     return jsonify({"ok": True, "balance": u["balance"], "msg": f"✅ በ {m} ({tx}) {amt:.2f} ETB ተረጋግጦ ወደ ባላንስህ ተጨምሯል።"})
 
@@ -434,7 +557,7 @@ def api_withdraw():
         return jsonify({"ok": False, "msg": "⏰ ዊዝድሮ የሚቻለው ከጠዋት 2:00 እስከ ማታ 3:00 ብቻ ነው። ዲፖዚት ግን 24 ሰዓት ይቻላል።"})
     d = request.get_json(force=True)
     uid, amt, m, dest = str(d.get("uid", "874411134")).strip(), float(d.get("amount", 0) or 0), str(d.get("method", "")).strip(), str(d.get("dest", "")).strip()
-    u, _ = get_u(uid)
+    u = get_u(uid)
     if amt <= 0:
         return jsonify({"ok": False, "msg": "ትክክለኛ አማውንት ያስገቡ።"})
     if amt > u["balance"]:
@@ -443,46 +566,35 @@ def api_withdraw():
         return jsonify({"ok": False, "msg": "የቴሌብር ስልክ ወይም የCBE አካውንት ያስገቡ።"})
     u["balance"] = round(u["balance"] - amt, 2)
     wid = "WD-" + uuid.uuid4().hex[:6].upper()
-    obj = {
-        "id": wid,
-        "uid": uid,
-        "method": m,
-        "amount": amt,
-        "dest": dest,
-        "payout_account": f"{PAYOUT_USERNAME} ({PAYOUT_PHONE})",
-        "status": "Pending",
-    }
+    obj = {"id": wid, "uid": uid, "method": m, "amount": amt, "dest": dest, "status": "Pending"}
     WITHDRAWALS[wid] = obj
     u["wds"].append(obj)
-    notify_payout_targets(
-        f"💸 Withdraw Pending ({PAYOUT_USERNAME})\n"
+    notify_internal(
+        f"💸 Withdraw Pending\n"
         f"ID: {wid}\n"
         f"Customer ID: {uid}\n"
         f"Bank: {m}\n"
         f"Amount: {amt:.2f} ETB\n"
-        f"Customer Account: {dest}\n"
-        f"Payout Account: {PAYOUT_USERNAME} ({PAYOUT_PHONE})"
+        f"Customer Account: {dest}"
     )
-    return jsonify({"ok": True, "balance": u["balance"], "msg": f"⏳ ጥያቄዎ ({wid}) Pending ላይ ነው፤ ወደ {PAYOUT_USERNAME} ተልኳል።"})
+    return jsonify({"ok": True, "balance": u["balance"], "msg": f"⏳ የ {amt:.2f} ETB የወጪ ጥያቄዎ ({wid}) Pending ላይ ነው።"})
 
 @app.route("/api/approve", methods=["POST"])
 def api_approve():
     d = request.get_json(force=True)
-    if not ADMIN_CHAT_ID or str(d.get("uid", "")).strip() != ADMIN_CHAT_ID:
-        return jsonify({"ok": False, "msg": "አድሚን ብቻ ነው ማጽደቅ የሚችለው።"}), 403
     wid = str(d.get("id", "")).strip()
     w = WITHDRAWALS.get(wid)
     if not w:
         return jsonify({"ok": False, "msg": "ጥያቄው አልተገኘም።"}), 404
     w["status"] = "Completed"
-    for item in get_u(w["uid"])[0]["wds"]:
+    for item in get_u(w["uid"])["wds"]:
         if item["id"] == wid:
             item["status"] = "Completed"
     tg(
         w["uid"],
-        f"✅ የ {w['amount']:.2f} ETB የወጪ ጥያቄዎ ({wid}) Completed ሆኗል፤ በ {PAYOUT_USERNAME} ተልኮልዎታል።",
+        f"✅ የ {w['amount']:.2f} ETB የወጪ ጥያቄዎ ({wid}) Completed ሆኗል፤ ወደ አካውንትዎ ተልኳል።",
     )
-    return jsonify({"ok": True, "msg": f"{wid} ወደ Completed ተቀይሯል።"})
+    return jsonify({"ok": True, "msg": f"{wid} Completed ሆኗል፤ ለደንበኛው ተልኳል።"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
