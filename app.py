@@ -1,10 +1,11 @@
+# -*- coding: utf-8 -*-
 import base64
 import os
 import random
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify, Response, request
 import requests
 
 app = Flask(__name__)
@@ -81,8 +82,8 @@ def main_reply_kb(uid, base_url):
   app_url = f"{base_url}/?uid={uid}"
   return {
       "keyboard": [
-          [{"text": "ð® Play", "web_app": {"url": app_url}}],
-          [{"text": "âï¸ Invite Friends"}, {"text": "ð Support"}],
+          [{"text": "🎮 ይጫወቱ", "web_app": {"url": app_url}}],
+          [{"text": "✉️ ጓደኛ ይጋብዙ"}, {"text": "🆘 እርዳታ"}],
       ],
       "resize_keyboard": True,
   }
@@ -137,7 +138,7 @@ def valid_tx(m, t):
 
 PAGE = """<!DOCTYPE html>
 <html lang="am"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FAST KENO</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
+<title>ETHIO FAST KENO</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 *{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#0e1116;color:#f3f4f6;padding-bottom:64px}
 .top{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#171b22;border-bottom:1px solid #262c36}
@@ -181,12 +182,12 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
 .nav{position:fixed;bottom:0;left:0;right:0;height:54px;background:#161a21;border-top:1px solid #262c36;display:grid;grid-template-columns:repeat(3,1fr)}
 .nb{background:none;border:none;color:#9ca3af;font-weight:700;font-size:11px}.nb.active{color:#4ade80}
 </style></head><body>
-<div class="top"><strong style="color:#4ade80">â¡ FAST KENO</strong><div class="pill">á£áááµ: <span id="bal">0.00</span> ETB</div></div>
-<div class="sub"><div>áá­á«: <strong id="cnt">0</strong>/10 | ID: <strong id="uid-lbl">-</strong></div><div class="tm" id="tm">01:00</div></div>
+<div class="top"><strong style="color:#4ade80">⚡ ETHIO FAST KENO</strong><div class="pill">ባላንስ: <span id="bal">0.00</span> ብር</div></div>
+<div class="sub"><div>ምርጫ: <strong id="cnt">0</strong>/10 | መታወቂያ: <strong id="uid-lbl">-</strong></div><div class="tm" id="tm">01:00</div></div>
 
 <div id="p-game" class="panel active">
   <div class="stage">
-    <div style="font-size:11px;color:#9ca3af;margin-bottom:6px">Draw: <strong id="dprog">0 / 20</strong> | Possible win: <strong id="mwin" style="color:#4ade80">0.00 ETB</strong></div>
+    <div style="font-size:11px;color:#9ca3af;margin-bottom:6px">የወጡ ቁጥሮች: <strong id="dprog">0 / 20</strong> | ከፍተኛ ሽልማት: <strong id="mwin" style="color:#4ade80">0.00 ብር</strong></div>
     <div class="ball" id="ball">--</div>
     <div class="strip" id="strip"></div>
   </div>
@@ -195,75 +196,75 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
   <div class="ctrl">
     <div class="row">
       <button class="btn" onclick="sbet(-10)">-</button><div class="val" id="bval">10</div><button class="btn" onclick="sbet(10)">+</button>
-      <button class="btn" onclick="sbet(bet)">X2</button><button class="btn" onclick="bet=Math.max(10,Math.floor(bal));ui()">MAX</button>
+      <button class="btn" onclick="sbet(bet)">X2</button><button class="btn" onclick="bet=Math.max(10,Math.floor(bal));ui()">ከፍተኛ</button>
     </div>
-    <button class="betbtn" id="betbtn" onclick="lockBet()">BET</button>
+    <button class="betbtn" id="betbtn" onclick="lockBet()">መደብ ያስገቡ (BET)</button>
   </div>
-  <div class="box" id="gmsg">á¨ááá¨á« á°ááµ 1 á°áá ááá¢ áá¥á­ (1-10) á¥á áá°á¥ (á¢á«ááµ 10 ETB) áá­á á BET á­á«á áá­á 01:00 á²á«áá 20 áá¥á®á½ á­áá£áá¢</div>
+  <div class="box" id="gmsg">የመምረጫ ሰዓት 1 ደቂቃ ነው። ከ1 እስከ 10 ቁጥሮች እና መደብ (ቢያንስ 10 ብር) መርጠው ይጫኑ ወይም 01:00 ሲያልቅ 20 ቁጥሮች ይወጣሉ።</div>
   <div class="box">
     <div style="display:flex;justify-content:space-between;align-items:center">
-      <strong>ðï¸ á¨á°áá¨á¡ áá°á¦á½ (Tickets)</strong>
+      <strong>🎟️ የተቆረጡ መደቦች</strong>
       <span id="tcount" style="color:#4ade80;font-weight:800">0</span>
     </div>
-    <div id="tickets-list"><div style="color:#9ca3af;margin-top:6px">á áá áá­ á¨á°áá¨á  áá°á¥ á¨ááá¢</div></div>
+    <div id="tickets-list"><div style="color:#9ca3af;margin-top:6px">በዚህ ዙር የተቆረጠ መደብ የለም።</div></div>
   </div>
 </div>
 
 <div id="insuf-modal" class="modal-bg" onclick="closeInsuf()">
   <div class="modal-box" onclick="event.stopPropagation()">
     <div class="modal-top">
-      <span style="color:#f87171;font-weight:900;font-size:14px">INSUFFICIENT FUNDS</span>
-      <button class="modal-x" onclick="closeInsuf()">â</button>
+      <span style="color:#f87171;font-weight:900;font-size:14px">በቂ ባላንስ የለም</span>
+      <button class="modal-x" onclick="closeInsuf()">✕</button>
     </div>
-    <div style="font-size:12px;color:#d1d5db;margin-bottom:10px">á£áááµá á á á á­á°ááá¢ á¥á£á­á áá¢ (Deposit) á«áµá­á áá­á áá°á¥ á­ááá±á¢</div>
-    <button class="act" onclick="closeInsuf();tab('wallet')">áá° WALLET ááµ</button>
+    <div style="font-size:12px;color:#d1d5db;margin-bottom:10px">ባላንስዎ በቂ አይደለም። እባክዎ ገቢ ያስገቡ ወይም የመደብ መጠን ይቀንሱ።</div>
+    <button class="act" onclick="closeInsuf();tab('wallet')">ወደ ዋሌት ይሂዱ</button>
   </div>
 </div>
 
 <div id="p-wallet" class="panel">
   <div class="box">
-    <strong>ð³ Deposit (24 á°ááµ á­ááµ áá â á áá¶áá²á­ áá¨ááá«)</strong>
+    <strong>💳 ገቢ ማስገቢያ (24 ሰዓት ክፍት ነው — አውቶማቲክ ማረጋገጫ)</strong>
     <div class="acct-card">
-      <div><b>Telebirr:</b> <span id="acc-tb">__TELEBIRR__</span></div>
-      <button class="copy-btn" onclick="copyById('acc-tb', this)">Copy</button>
+      <div><b>ቴሌብር:</b> <span id="acc-tb">__TELEBIRR__</span></div>
+      <button class="copy-btn" onclick="copyById('acc-tb', this)">ቅዳ</button>
     </div>
     <div class="acct-card">
-      <div><b>CBE:</b> <span id="acc-cbe">__CBE__</span></div>
-      <button class="copy-btn" onclick="copyById('acc-cbe', this)">Copy</button>
+      <div><b>ኢትዮጵያ ንግድ ባንክ (CBE):</b> <span id="acc-cbe">__CBE__</span></div>
+      <button class="copy-btn" onclick="copyById('acc-cbe', this)">ቅዳ</button>
     </div>
-    <div style="color:#4ade80;margin-top:6px">FT á®áµ ááµáá£áµ áá­á áµá­áªáá»áµ ááá­ á­á½áá (áµáá á¥áá áá­ á«ááá ááá á áá áµ)á¢</div>
-    <select id="dm"><option value="Telebirr">Telebirr</option><option value="CBE">CBE</option></select>
-    <input type="number" id="da" placeholder="á¨á¥á­ áá á (á¢á«ááµ 10)" value="50">
+    <div style="color:#4ade80;margin-top:6px">የ FT ኮድ ማስገባት ወይም ስክሪንሻት መላክ ይችላሉ (ድጋሚ ጥቅም ላይ ያልዋለ መሆን አለበት)።</div>
+    <select id="dm"><option value="Telebirr">ቴሌብር</option><option value="CBE">ንግድ ባንክ (CBE)</option></select>
+    <input type="number" id="da" placeholder="የብር መጠን (ቢያንስ 10)" value="50">
     <select id="dmode" onchange="toggleDepMode()">
-      <option value="code">FT / Transaction á®áµ ááµáá£áµ</option>
-      <option value="shot">Screenshot ááµáá£áµ</option>
+      <option value="code">የ FT / የክፍያ ኮድ ማስገባት</option>
+      <option value="shot">ስክሪንሻት ማስገባት</option>
     </select>
     <div id="d-code-wrap">
-      <input type="text" id="dt" placeholder="FT / Transaction á®áµ (ááá³á FT26328XXXX)">
+      <input type="text" id="dt" placeholder="የ FT / የክፍያ ኮድ (ለምሳሌ FT26328XXXX)">
     </div>
     <div id="d-shot-wrap" style="display:none">
       <input type="file" id="df" accept="image/*">
     </div>
-    <button class="act" onclick="dep()">áá¢ á á¨ááá¥</button>
+    <button class="act" onclick="dep()">ገቢ ያረጋግጡ</button>
     <div id="dmsg" style="margin-top:6px;color:#93c5fd"></div>
   </div>
   <div class="box">
-    <strong>ð¸ Withdraw (á¨á ááµ 2:00 - áá³ 3:00 á¥á»)</strong><br>
-    <input type="number" id="wa" placeholder="á¨ááá£áá Amount á­á»á" value="10">
-    <select id="wm"><option value="Telebirr">Telebirr</option><option value="CBE">CBE</option></select>
-    <input type="text" id="wd" placeholder="á¨á£áá­ á á«áááµ á¥á áµá (ááá³á 09... / 1000... - áµá)">
-    <button class="act amb" onclick="wdr()">Withdraw á á­á</button>
+    <strong>💸 ገንዘብ ማውጣት (ከጠዋት 2:00 እስከ ማታ 3:00 ብቻ)</strong><br>
+    <input type="number" id="wa" placeholder="የሚወጣውን የብር መጠን ያስገቡ" value="10">
+    <select id="wm"><option value="Telebirr">ቴሌብር</option><option value="CBE">ንግድ ባንክ (CBE)</option></select>
+    <input type="text" id="wd" placeholder="የአካውንት ቁጥር እና ሙሉ ስም (ለምሳሌ 09... / 1000... - ስም)">
+    <button class="act amb" onclick="wdr()">ወጪ ይጠይቁ</button>
     <div id="wmsg" style="margin-top:6px;color:#fcd34d"></div>
   </div>
-  <div class="box"><strong>â³ Withdraw Status</strong><div id="wlist">ááá á¥á«á á¨ááá¢</div></div>
+  <div class="box"><strong>⏳ የወጪ ጥያቄ ሁኔታ</strong><div id="wlist">ምንም ጥያቄ የለም።</div></div>
 </div>
 
-<div id="p-hist" class="panel"><div class="box"><strong>ð á¨á¨áá³ á³áªá­</strong><div id="hlist">ááá á³áªá­ á¨ááá¢</div></div></div>
+<div id="p-hist" class="panel"><div class="box"><strong>📜 የጨዋታ ታሪክ</strong><div id="hlist">ምንም ታሪክ የለም።</div></div></div>
 
 <div class="nav">
-  <button class="nb active" id="n-game" onclick="tab('game')">GAME</button>
-  <button class="nb" id="n-wallet" onclick="tab('wallet')">WALLET</button>
-  <button class="nb" id="n-hist" onclick="tab('hist')">HISTORY</button>
+  <button class="nb active" id="n-game" onclick="tab('game')">ጨዋታ</button>
+  <button class="nb" id="n-wallet" onclick="tab('wallet')">ዋሌት</button>
+  <button class="nb" id="n-hist" onclick="tab('hist')">ታሪክ</button>
 </div>
 
 <script>
@@ -279,7 +280,7 @@ for(let i=1;i<=80;i++){
   b.onclick=()=>{
     if(drawing)return;
     if(picks.has(i)){picks.delete(i);b.classList.remove("sel");}
-    else{if(picks.size>=10)return alert("á¨10 á áá­ á á­á»áá");picks.add(i);b.classList.add("sel");}
+    else{if(picks.size>=10)return alert("ከ10 ቁጥር በላይ መምረጥ አይቻልም");picks.add(i);b.classList.add("sel");}
     ui();
   };
   g.appendChild(b);
@@ -292,14 +293,14 @@ function copyById(elId,btn){
   if(!txt)return;
   if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).catch(()=>{});}
   const ta=document.createElement("textarea");ta.value=txt;document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);
-  if(btn){const prev=btn.textContent;btn.textContent="Copied!";setTimeout(()=>btn.textContent=prev,1200);}
+  if(btn){const prev=btn.textContent;btn.textContent="ተቀድቷል!";setTimeout(()=>btn.textContent=prev,1200);}
 }
 function ui(){
   document.getElementById("cnt").textContent=picks.size;
   document.getElementById("bval").textContent=bet;
   const t=PT[picks.size]||{};
   const mx=Math.max(0,...Object.values(t));
-  document.getElementById("mwin").textContent=(bet*mx).toFixed(2)+" ETB";
+  document.getElementById("mwin").textContent=(bet*mx).toFixed(2)+" ብር";
 }
 function sbet(d){if(!drawing){bet=Math.max(10,bet+d);ui();}}
 function tab(k){["game","wallet","hist"].forEach(x=>{document.getElementById("p-"+x).classList.toggle("active",x===k);document.getElementById("n-"+x).classList.toggle("active",x===k);});load();}
@@ -307,16 +308,16 @@ function toggleDepMode(){const m=document.getElementById("dmode").value;document
 function renderTickets(){
   const wrap=document.getElementById("tickets-list");
   document.getElementById("tcount").textContent=tickets.length;
-  if(!tickets.length){wrap.innerHTML='<div style="color:#9ca3af;margin-top:6px">á áá áá­ á¨á°áá¨á  áá°á¥ á¨ááá¢</div>';return;}
+  if(!tickets.length){wrap.innerHTML='<div style="color:#9ca3af;margin-top:6px">በዚህ ዙር የተቆረጠ መደብ የለም።</div>';return;}
   wrap.innerHTML=tickets.map(tk=>{
-    let stHtml='<span class="st-wait">Waiting</span>';
+    let stHtml='<span class="st-wait">በመጠባበቅ ላይ</span>';
     let cls="tcard";
     if(roundDone){
-      if(Number(tk.payout||0)>0){stHtml=`<span class="st-win">${Number(tk.payout).toFixed(2)} á¥á­ á á¸áááá</span>`;cls+=" won-card";}
-      else{stHtml='<span class="st-lose">Try Again</span>';}
+      if(Number(tk.payout||0)>0){stHtml=`<span class="st-win">${Number(tk.payout).toFixed(2)} ብር አሸንፈሃል</span>`;cls+=" won-card";}
+      else{stHtml='<span class="st-lose">እንደገና ይሞክሩ</span>';}
     }
     return `<div class="${cls}">
-      <div class="tcard-top"><span><b>${tk.player}</b></span><span>Bet <b>${Number(tk.bet).toFixed(0)}</b> | ${stHtml}</span></div>
+      <div class="tcard-top"><span><b>${tk.player}</b></span><span>መደብ <b>${Number(tk.bet).toFixed(0)}</b> | ${stHtml}</span></div>
       <div class="tnums">${tk.picks.map(n=>`<span class="tnum${drawnSoFar.has(n)?" matched":""}">${n}</span>`).join("")}</div>
     </div>`;
   }).join("");
@@ -329,16 +330,16 @@ async function load(){
     if(!drawing){tickets=d.tickets||[];roundDone=false;}
     document.getElementById("bal").textContent=bal.toFixed(2);
     renderTickets();
-    document.getElementById("hlist").innerHTML=d.bets.length?d.bets.slice().reverse().map(x=>`<div>Bet:${x.bet} | Hits:${x.matches} | Win:${x.payout} ETB</div>`).join(""):"ááá á³áªá­ á¨ááá¢";
-    document.getElementById("wlist").innerHTML=d.wds.length?d.wds.slice().reverse().map(w=>`<div style="padding:6px 0;border-bottom:1px solid #2b303b">${w.id} | ${w.method} (${w.dest}) | ${w.amount} ETB | <b>${w.status}</b>${w.status==="Pending"?`<br><button class="appb" onclick="appw('${w.id}')">Complete</button>`:""}</div>`).join(""):"ááá á¥á«á á¨ááá¢";
+    document.getElementById("hlist").innerHTML=d.bets.length?d.bets.slice().reverse().map(x=>`<div>መደብ: ${x.bet} ብር | የተገኙ: ${x.matches} | ሽልማት: ${x.payout} ብር</div>`).join(""):"ምንም ታሪክ የለም።";
+    document.getElementById("wlist").innerHTML=d.wds.length?d.wds.slice().reverse().map(w=>`<div style="padding:6px 0;border-bottom:1px solid #2b303b">${w.id} | ${w.method} (${w.dest}) | ${w.amount} ብር | <b>${w.status}</b>${w.status==="Pending"?`<br><button class="appb" onclick="appw('${w.id}')">አጽድቅ (Complete)</button>`:""}</div>`).join(""):"ምንም ጥያቄ የለም።";
   }catch(e){}
 }
 function clearSelectionsAndBoard(){picks.clear();document.querySelectorAll(".t").forEach(x=>x.classList.remove("sel","hit","miss"));ui();}
 function resetDrawStage(){drawnSoFar.clear();roundDone=false;document.querySelectorAll(".t").forEach(x=>x.classList.remove("hit","miss"));document.getElementById("strip").innerHTML="";document.getElementById("dprog").textContent="0 / 20";document.getElementById("ball").textContent="--";const bn=document.getElementById("out-banner");bn.className="banner";bn.textContent="";}
 async function lockBet(){
   if(drawing)return;
-  if(!picks.size)return alert("á¢á«ááµ 1 áá¥á­ áá¨á¥");
-  if(bet<10)return alert("ááá°á áá°á¥ 10 ETB áá");
+  if(!picks.size)return alert("ቢያንስ 1 ቁጥር ይምረጡ");
+  if(bet<10)return alert("ዝቅተኛ መደብ 10 ብር ነው");
   if(bal<=0||bet>bal)return showInsuf();
   const r=await fetch("/api/reserve_bet",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({uid,picks:Array.from(picks),bet})});
   const d=await r.json();
@@ -346,7 +347,7 @@ async function lockBet(){
   bal=d.balance;document.getElementById("bal").textContent=bal.toFixed(2);tickets=d.tickets||tickets;renderTickets();
   queued={picks:Array.from(picks),bet};
   clearSelectionsAndBoard();
-  document.getElementById("gmsg").textContent=`â áá°á¥ (${bet} ETB) á°á­áá (${queued.picks.length} áá¥á­)á¢ 01:00 á²á«áá 20 áá¥á®á½ á­áá£áá¢`;
+  document.getElementById("gmsg").textContent=`✅ መደብ (${bet} ብር) ተይዟል (${queued.picks.length} ቁጥር)። 01:00 ሲያልቅ 20 ቁጥሮች ይወጣሉ።`;
 }
 async function runRoundDraw(){
   if(drawing)return; drawing=true; resetDrawStage();
@@ -369,9 +370,9 @@ async function runRoundDraw(){
   renderTickets();
   const bn=document.getElementById("out-banner");
   if(activeBet){
-    if(d.payout>0){bn.className="banner winb";bn.textContent=`ð ${d.payout.toFixed(2)} á¥á­ á á¸áááá (${d.matches} Matches)`;}
-    else{bn.className="banner tryb";bn.textContent=`Try Again (${d.matches} Matches)`;}
-    document.getElementById("gmsg").innerHTML=`<b>Matches (${d.matches}):</b> ${d.hits.join(", ")||"0"} | <b>Payout:</b> ${d.payout.toFixed(2)} ETB`;
+    if(d.payout>0){bn.className="banner winb";bn.textContent=`🎉 ${d.payout.toFixed(2)} ብር አሸንፈሃል (${d.matches} ተዛማጅ)`;}
+    else{bn.className="banner tryb";bn.textContent=`እንደገና ይሞክሩ (${d.matches} ተዛማጅ)`;}
+    document.getElementById("gmsg").innerHTML=`<b>ተዛማጅ (${d.matches}):</b> ${d.hits.join(", ")||"0"} | <b>ሽልማት:</b> ${d.payout.toFixed(2)} ብር`;
     await new Promise(res=>setTimeout(res,5000));
   }
   bn.className="banner";bn.textContent="";
@@ -384,7 +385,7 @@ async function dep(){
   let shot_b64="";
   if(mode==="shot"){
     const fi=document.getElementById("df");
-    if(!fi.files||!fi.files[0])return alert("á¥á£á­á á¨á­áá« áµá­áªáá»áµ áá¨á¥á¢");
+    if(!fi.files||!fi.files[0])return alert("እባክዎ የክፍያ ስክሪንሻት ይምረጡ።");
     shot_b64=await new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(fr.result);fr.onerror=rej;fr.readAsDataURL(fi.files[0]);});
   }
   const r=await fetch("/api/deposit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({uid,mode,method:document.getElementById("dm").value,amount:document.getElementById("da").value,tx:document.getElementById("dt").value,shot_b64})});
@@ -415,7 +416,7 @@ def home():
   html = PAGE.replace("__TELEBIRR__", TELEBIRR_ACCOUNT).replace(
       "__CBE__", CBE_ACCOUNT
   )
-  return render_template_string(html)
+  return Response(html, mimetype="text/html; charset=utf-8")
 
 
 @app.route("/set_my_webhook")
@@ -447,17 +448,17 @@ def webhook():
         if not u["bonus_claimed"]:
           u["bonus_claimed"] = True
           u["balance"] = round(u["balance"] + 10.0, 2)
-        tg_answer_cb(cb_id, "áááá£ á°á ááá! 10 ETB á¦ááµ á°á°á¥á¶ááá¢")
+        tg_answer_cb(cb_id, "ምዝገባ ተጠናቋል! 10 ብር ቦነስ ተሰጥቶዎታል።")
         tg(
             uid,
-            f"â áááá£á á á°á³á« ááá³ á°á ááá!\nð á¨10.00 ETB á¦ááµ á°á°á¥á¶áá³á (á ááµ áá á¥á»)á¢\nð° á£áááµá: {u['balance']:.2f} ETB",
+            f"✅ ምዝገባዎ በተሳካ ሁኔታ ተጠናቋል!\n🎁 የ10.00 ብር ቦነስ ተሰጥቶዎታል (አንድ ጊዜ ብቻ)።\n💰 ባላንስዎ: {u['balance']:.2f} ብር",
             main_reply_kb(uid, base_url),
         )
       else:
-        tg_answer_cb(cb_id, "ááµá á°áááá áá (á¦ááµ á ááµ áá á¥á» áá)á¢")
+        tg_answer_cb(cb_id, "ቀድሞ ተመዝግበዋል (ቦነስ አንድ ጊዜ ብቻ ነው)።")
         tg(
             uid,
-            f"â¹ï¸ ááµá á°áááá ááá¢ á¦ááµ á¨áá°á á á ááµ áá á¥á» ááá¢\nð° á£áááµá: {u['balance']:.2f} ETB",
+            f"ℹ️ ቀድሞ ተመዝግበዋል። ቦነስ የሚሰጠው አንድ ጊዜ ብቻ ነው።\n💰 ባላንስዎ: {u['balance']:.2f} ብር",
             main_reply_kb(uid, base_url),
         )
     return jsonify({"ok": True})
@@ -474,11 +475,11 @@ def webhook():
     if not u["registered"]:
       tg(
           uid,
-          "á°áá! áá° FAST KENO á¥áá³á á á°áá áá¡á¢\n\n"
-          "ááááá­ á á´ááá«áá á­áááá¡á¢ á²áááá¡ á ááµ áá á¥á» 10.00 ETB á¦ááµ á«áááá¢",
+          "ሰላም! ወደ ETHIO FAST KENO እንኳን በደህና መጡ።\n\n"
+          "ለመጀመር በቴሌግራምዎ ይመዝገቡ። ሲመዘገቡ አንድ ጊዜ ብቻ 10.00 ብር ቦነስ ያገኛሉ።",
           {
               "inline_keyboard": [[{
-                  "text": "â á°áááá¥ á¥á 10 ETB á¦ááµ áá°áµ",
+                  "text": "✅ ተመዝገብ እና 10 ብር ቦነስ ውሰድ",
                   "callback_data": "register_bonus",
               }]]
           },
@@ -486,30 +487,30 @@ def webhook():
     else:
       tg(
           uid,
-          f"á°áá! áá° FAST KENO á¥áá³á á á°áá áá¡á¢\nð° á£áááµá: {u['balance']:.2f} ETB",
+          f"ሰላም! ወደ ETHIO FAST KENO እንኳን በደህና መጡ።\n💰 ባላንስዎ: {u['balance']:.2f} ብር",
           main_reply_kb(uid, base_url),
       )
     return jsonify({"ok": True})
 
-  if text in ("ð® Play", "Play", "Play Games"):
+  if text in ("🎮 ይጫወቱ", "🎮 Play", "Play", "Play Games"):
     if not u["registered"]:
       tg(
           uid,
-          "á¥á£á­á ááááªá« á­áááá¡á¢",
+          "እባክዎ መጀመሪያ ይመዝገቡ።",
           {"inline_keyboard": [[{
-              "text": "â á°áááá¥ á¥á 10 ETB á¦ááµ áá°áµ",
+              "text": "✅ ተመዝገብ እና 10 ብር ቦነስ ውሰድ",
               "callback_data": "register_bonus",
           }]]},
       )
     else:
       tg(
           uid,
-          f"ð® ááá«ááµ á¨á³á½ á«ááá Play ááá á­á«áá¢\nð° á£áááµá: {u['balance']:.2f} ETB",
+          f"🎮 ለመጫወት ከታች ያለውን 'ይጫወቱ' ቁልፍ ይጫኑ።\n💰 ባላንስዎ: {u['balance']:.2f} ብር",
           main_reply_kb(uid, base_url),
       )
     return jsonify({"ok": True})
 
-  if text in ("âï¸ Invite Friends", "Invite Friends"):
+  if text in ("✉️ ጓደኛ ይጋብዙ", "✉️ Invite Friends", "Invite Friends"):
     bot_info_user = ""
     try:
       me = requests.get(
@@ -526,26 +527,26 @@ def webhook():
     )
     tg(
         uid,
-        f"ð¥ áá°áá½áá á­áá¥á!\ná¨áá¥á£ ááá­á:\n{ref_link}",
+        f"👥 ጓደኞችዎን ይጋብዙ!\nየግብዣ ሊንክዎ:\n{ref_link}",
         main_reply_kb(uid, base_url),
     )
     return jsonify({"ok": True})
 
-  if text in ("ð Support", "Support"):
-    sup_line = f"\náá¥á³ Support: @{SUPPORT_HANDLE}" if SUPPORT_HANDLE else ""
+  if text in ("🆘 እርዳታ", "🆘 Support", "Support"):
+    sup_line = f"\nቀጥታ እርዳታ: @{SUPPORT_HANDLE}" if SUPPORT_HANDLE else ""
     tg(
         uid,
-        "ð Support Team:\náááááá á¥á«á áá­á á¥á­á³á³ á¥áá áááá­áµ á­á»áá¤ Support Team"
-        f" á­áááµááá³áá¢{sup_line}",
+        "🆘 የድጋፍ ቡድን:\nማንኛውንም ጥያቄ ወይም እርዳታ እዚህ መልዕክት ይጻፉ፤ የድጋፍ ቡድኑ"
+        f" ይመልስልዎታል።{sup_line}",
         main_reply_kb(uid, base_url),
     )
     return jsonify({"ok": True})
 
   if u["registered"] and not text.startswith("/"):
-    notify_internal(f"ð¬ Support Message\nCustomer ID: {uid}\nMessage: {text}")
+    notify_internal(f"💬 Support Message\nCustomer ID: {uid}\nMessage: {text}")
     tg(
         uid,
-        "â áááá­áµá áá° Support Team á°á­á·áá¤ á áá­á¡ ááá½ á­á°á¥áá³áá¢",
+        "✅ መልዕክትዎ ወደ ድጋፍ ቡድኑ ደርሷል፤ በቅርቡ ምላሽ ይሰጥዎታል።",
         main_reply_kb(uid, base_url),
     )
 
@@ -577,10 +578,10 @@ def api_reserve_bet():
   bet = float(d.get("bet", 0) or 0)
   u = get_u(uid)
   if not (1 <= len(picks) <= 10) or bet < 10:
-    return jsonify({"ok": False, "msg": "á¨1-10 áá¥á­ á¥á á¢á«ááµ 10 ETB á­áá¨á¡á¢"})
+    return jsonify({"ok": False, "msg": "ከ1 እስከ 10 ቁጥር እና ቢያንስ 10 ብር ይምረጡ።"})
   if u["balance"] <= 0 or bet > u["balance"]:
     return jsonify(
-        {"ok": False, "insufficient": True, "msg": "INSUFFICIENT FUNDS"}
+        {"ok": False, "insufficient": True, "msg": "በቂ ባላንስ የለም"}
     )
   u["balance"] = round(u["balance"] - bet, 2)
   LIVE_TICKETS.append(
@@ -623,11 +624,11 @@ def api_play():
         "tickets": snapshot,
     })
   if not (1 <= len(picks) <= 10):
-    return jsonify({"ok": False, "msg": "áá­á«á á¨1-10 ááá á áá áµá¢"})
+    return jsonify({"ok": False, "msg": "ምርጫው ከ1 እስከ 10 መሆን አለበት።"})
   if not already:
     if u["balance"] <= 0 or bet > u["balance"]:
       return jsonify(
-          {"ok": False, "insufficient": True, "msg": "INSUFFICIENT FUNDS"}
+          {"ok": False, "insufficient": True, "msg": "በቂ ባላንስ የለም"}
       )
     u["balance"] = round(u["balance"] - bet, 2)
   hits = sorted([x for x in picks if x in drawn_set])
@@ -656,19 +657,19 @@ def api_deposit():
   shot_b64 = str(d.get("shot_b64", "")).strip()
   amt = float(d.get("amount", 0) or 0)
   if amt < 10:
-    return jsonify({"ok": False, "msg": "ááá°á áá¢ 10 ETB ááá¢"})
+    return jsonify({"ok": False, "msg": "ዝቅተኛ ገቢ 10 ብር ነው።"})
 
   u = get_u(uid)
   if mode == "shot":
     if not shot_b64:
-      return jsonify({"ok": False, "msg": "áµá­áªáá»áµ á áá°áá¨á áá¢"})
+      return jsonify({"ok": False, "msg": "ስክሪንሻት አልተመረጠም።"})
     raw_b64 = shot_b64.split(",", 1)[1] if "," in shot_b64 else shot_b64
     try:
       img_bytes = base64.b64decode(raw_b64)
     except Exception:
-      return jsonify({"ok": False, "msg": "á¨áµá­áªáá»áµ áá­á ááá á¥ á áá°á»ááá¢"})
+      return jsonify({"ok": False, "msg": "የስክሪንሻት ፋይል ማንበብ አልተቻለም።"})
     if not img_bytes:
-      return jsonify({"ok": False, "msg": "á£á¶ áµá­áªáá»áµ ááá¢"})
+      return jsonify({"ok": False, "msg": "ባዶ ስክሪንሻት ነው።"})
     shot_key = "SHOT_" + uuid.uuid4().hex[:12].upper()
     USED_TX.add(shot_key)
     u["balance"] = round(u["balance"] + amt, 2)
@@ -676,8 +677,8 @@ def api_deposit():
         "ok": True,
         "balance": u["balance"],
         "msg": (
-            f"â á  {m} áµá­áªáá»áµ ({shot_key}) {amt:.2f} ETB á á«áµ-á°á­ á°á¨ááá¦ áá°"
-            " á£áááµá á°á¨áá¯áá¢"
+            f"✅ በ {m} ስክሪንሻት ({shot_key}) {amt:.2f} ብር በራስ-ሰር ተረጋግጦ ወደ"
+            " ባላንስዎ ተጨምሯል።"
         ),
     })
 
@@ -685,8 +686,8 @@ def api_deposit():
     return jsonify({
         "ok": False,
         "msg": (
-            "â áµáá°áµ ááá¤ á­á á¨ FT / Transaction á®áµ áµá­á­á á á­á°áá áá­á ááµá"
-            " á°á áááá¢"
+            "❌ ስህተት ነው፤ ይህ የ FT / የክፍያ ኮድ ትክክል አይደለም ወይም ቀድሞ"
+            " ተጠቅሟል።"
         ),
     })
   USED_TX.add(tx)
@@ -694,7 +695,7 @@ def api_deposit():
   return jsonify({
       "ok": True,
       "balance": u["balance"],
-      "msg": f"â á  {m} ({tx}) {amt:.2f} ETB á°á¨ááá¦ áá° á£áááµá á°á¨áá¯áá¢",
+      "msg": f"✅ በ {m} ({tx}) {amt:.2f} ብር ተረጋግጦ ወደ ባላንስዎ ተጨምሯል።",
   })
 
 
@@ -704,8 +705,8 @@ def api_withdraw():
     return jsonify({
         "ok": False,
         "msg": (
-            "â° áááµá® á¨áá»áá á¨á ááµ 2:00 á¥áµá¨ áá³ 3:00 á¥á» ááá¢ á²áááµ áá 24"
-            " á°ááµ á­á»ááá¢"
+            "⏰ ገንዘብ ማውጣት የሚቻለው ከጠዋት 2:00 እስከ ማታ 3:00 ብቻ ነው። ገቢ ግን"
+            " 24 ሰዓት ይቻላል።"
         ),
     })
   d = request.get_json(force=True)
@@ -717,11 +718,11 @@ def api_withdraw():
   )
   u = get_u(uid)
   if amt <= 0:
-    return jsonify({"ok": False, "msg": "áµá­á­áá á ááááµ á«áµáá¡á¢"})
+    return jsonify({"ok": False, "msg": "ትክክለኛ የብር መጠን ያስገቡ።"})
   if amt > u["balance"]:
-    return jsonify({"ok": False, "msg": "á á á£áááµ á¨áááá¢"})
+    return jsonify({"ok": False, "msg": "በቂ ባላንስ የለዎትም።"})
   if not dest:
-    return jsonify({"ok": False, "msg": "á¨á£áá­ á á«áááµ á¥á áµá á«áµáá¡á¢"})
+    return jsonify({"ok": False, "msg": "የአካውንት ቁጥር እና ሙሉ ስም ያስገቡ።"})
   u["balance"] = round(u["balance"] - amt, 2)
   wid = "WD-" + uuid.uuid4().hex[:6].upper()
   obj = {
@@ -735,7 +736,7 @@ def api_withdraw():
   WITHDRAWALS[wid] = obj
   u["wds"].append(obj)
   notify_internal(
-      f"ð¸ Withdraw Request (Pending)\n"
+      f"💸 Withdraw Request (Pending)\n"
       f"ID: {wid}\n"
       f"Customer ID: {uid}\n"
       f"Bank: {m}\n"
@@ -746,8 +747,8 @@ def api_withdraw():
       "ok": True,
       "balance": u["balance"],
       "msg": (
-          f"â³ á¨ {amt:.2f} ETB á¨ááª á¥á«áá ({wid}) á  Pending áá­ áá (á¨20-30"
-          " á°áá áááµáµ á­á½áá)á¢"
+          f"⏳ የ {amt:.2f} ብር የወጪ ጥያቄዎ ({wid}) በመጠባበቅ ላይ (Pending) ነው"
+          " (ከ20–30 ደቂቃ ሊወስድ ይችላል)።"
       ),
   })
 
@@ -758,18 +759,18 @@ def api_approve():
   wid = str(d.get("id", "")).strip()
   w = WITHDRAWALS.get(wid)
   if not w:
-    return jsonify({"ok": False, "msg": "á¥á«áá á áá°áááá¢"}), 404
+    return jsonify({"ok": False, "msg": "ጥያቄው አልተገኘም።"}), 404
   w["status"] = "Completed"
   for item in get_u(w["uid"])["wds"]:
     if item["id"] == wid:
       item["status"] = "Completed"
   tg(
       w["uid"],
-      f"â Completed! á¨ {w['amount']:.2f} ETB á¨ááª á¥á«áá ({wid}) á°á áá áá°"
-      f" á á«áááµá ({w['dest']}) á°áá³áá¢",
+      f"✅ ተጠናቋል (Completed)! የ {w['amount']:.2f} ብር የወጪ ጥያቄዎ ({wid}) ተጠናቆ"
+      f" ወደ አካውንትዎ ({w['dest']}) ተልኳል።",
   )
   return jsonify(
-      {"ok": True, "msg": f"{wid} Completed áááá¤ áá°áá áá á°áá³áá¢"}
+      {"ok": True, "msg": f"{wid} ተጠናቋል (Completed)፤ ለደንበኛው ተልኳል።"}
   )
 
 
