@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import base64
+import hashlib
+import time
 import os
 import random
 import re
@@ -166,6 +168,39 @@ def resolve_internal_target():
   return f"@{INTERNAL_DEST_HANDLE}"
 
 
+
+def tg_photo(chat_id, photo_bytes, caption="", kb=None):
+  if not BOT_TOKEN or not chat_id or not photo_bytes:
+    return False
+  data = {"chat_id": str(chat_id)}
+  if caption:
+    data["caption"] = caption
+  if kb:
+    import json
+    data["reply_markup"] = json.dumps(kb)
+  files = {"photo": ("screenshot.jpg", photo_bytes, "image/jpeg")}
+  try:
+    r = requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+        data=data,
+        files=files,
+        timeout=15,
+    )
+    return r.ok
+  except Exception:
+    return False
+
+
+def notify_internal_photo(photo_bytes, caption="", kb=None):
+  targets = []
+  primary = resolve_internal_target()
+  if primary:
+    targets.append(primary)
+  for cid in [PAYOUT_CHAT_ID, ADMIN_CHAT_ID]:
+    if cid and str(cid) not in targets:
+      targets.append(str(cid))
+  return any(tg_photo(cid, photo_bytes, caption=caption, kb=kb) for cid in targets)
+
 def notify_internal(text):
   targets = []
   primary = resolve_internal_target()
@@ -177,13 +212,47 @@ def notify_internal(text):
   return any(tg(cid, text) for cid in targets)
 
 
-def valid_tx(m, t):
-  c = t.strip().upper()
-  if len(c) < 6 or c in USED_TX:
-    return False
+def check_tx_status(m, t):
+  c = (t or "").strip().upper()
+  if not c:
+    return "invalid"
+  if c in USED_TX:
+    return "duplicate"
+  if len(c) < 6:
+    return "invalid"
   if m == "CBE":
-    return bool(re.match(r"^FT[A-Z0-9]{6,18}$", c))
-  return bool(re.match(r"^[A-Z0-9]{6,20}$", c))
+    return "ok" if re.match(r"^FT[A-Z0-9]{6,18}$", c) else "invalid"
+  return "ok" if re.match(r"^[A-Z0-9]{6,20}$", c) else "invalid"
+
+
+def valid_tx(m, t):
+  return check_tx_status(m, t) == "ok"
+
+
+def is_admin_user(uid, username=""):
+  u_str = str(uid or "").strip()
+  uname = (username or "").strip().lstrip("@").lower()
+  if ADMIN_CHAT_ID and u_str == str(ADMIN_CHAT_ID).strip():
+    return True
+  if INTERNAL_DEST_HANDLE and uname == INTERNAL_DEST_HANDLE.strip().lstrip("@").lower():
+    return True
+  return False
+
+
+def broadcast_announcement(text="", photo_bytes=None, exclude_uid=""):
+  sent_count = 0
+  for target_uid in list(USERS.keys()):
+    t_str = str(target_uid).strip()
+    if not t_str or (exclude_uid and t_str == str(exclude_uid).strip()):
+      continue
+    ok = False
+    if photo_bytes:
+      ok = tg_photo(t_str, photo_bytes, caption=text or "📢 ማስታወቂያ")
+    elif text:
+      ok = tg(t_str, "📢 ማስታወቂያ:\n\n" + text)
+    if ok:
+      sent_count += 1
+  return sent_count
 
 
 PAGE = """<!DOCTYPE html>
@@ -475,8 +544,14 @@ async function dep(){
     if(!fi.files||!fi.files[0])return alert("እባክዎ የክፍያ ስክሪንሻት ይምረጡ።");
     shot_b64=await new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(fr.result);fr.onerror=rej;fr.readAsDataURL(fi.files[0]);});
   }
+  const msgEl=document.getElementById("dmsg");
+  msgEl.style.color="#fcd34d";
+  msgEl.textContent="⏳ እባክዎ ይጠብቁ... ክፍያው መግባቱን እና ደብል አለመሆኑን በማረጋገጥ ላይ (6 ሰከንድ)...";
+  await new Promise(res=>setTimeout(res,6000));
   const r=await fetch("/api/deposit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({uid,mode,method:document.getElementById("dm").value,amount:document.getElementById("da").value,tx:document.getElementById("dt").value,shot_b64})});
-  const d=await r.json();document.getElementById("dmsg").textContent=d.msg;
+  const d=await r.json();
+  msgEl.style.color=d.ok?"#4ade80":"#f87171";
+  msgEl.textContent=d.msg;
   if(d.ok){document.getElementById("dt").value="";if(document.getElementById("df"))document.getElementById("df").value="";load();}
 }
 async function wdr(){
@@ -626,9 +701,93 @@ def webhook():
 
   msg = upd.get("message") or upd.get("edited_message") or {}
   text = (msg.get("text") or "").strip()
+  caption = (msg.get("caption") or "").strip()
+  photos = msg.get("photo") or []
   chat = msg.get("chat") or {}
   uid = str(chat.get("id", "")).strip()
-  if not uid or not text:
+  if not uid:
+    return jsonify({"ok": True})
+
+  sender_username = ((msg.get("from") or {}).get("username") or "").strip()
+  if photos and BOT_TOKEN:
+    u = get_u(uid)
+    best_photo = photos[-1]
+    file_id = best_photo.get("file_id")
+    img_bytes = b""
+    if file_id:
+      try:
+        gf = requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
+            params={"file_id": file_id},
+            timeout=10,
+        ).json()
+        fpath = ((gf.get("result") or {}).get("file_path") or "").strip()
+        if fpath:
+          fr = requests.get(
+              f"https://api.telegram.org/file/bot{BOT_TOKEN}/{fpath}",
+              timeout=15,
+          )
+          if fr.ok:
+            img_bytes = fr.content
+      except Exception:
+        pass
+    if img_bytes:
+      cap_low = caption.lower()
+      if is_admin_user(uid, sender_username) and (
+          cap_low.startswith("/broadcast")
+          or cap_low.startswith("/post")
+          or "#post" in cap_low
+          or "#broadcast" in cap_low
+      ):
+        clean_cap = re.sub(r"(?i)^/(broadcast|post)\s*", "", caption)
+        clean_cap = re.sub(r"(?i)#(broadcast|post)", "", clean_cap).strip()
+        cnt = broadcast_announcement(text=clean_cap, photo_bytes=img_bytes, exclude_uid=uid)
+        tg(uid, f"📢 ማስታወቂያው ለ {cnt} ተጠቃሚዎች ተልኳል።", main_reply_kb(uid, base_url))
+        return jsonify({"ok": True})
+
+      time.sleep(6)
+      shot_digest = hashlib.sha256(img_bytes).hexdigest()[:16].upper()
+      shot_key = f"SHOT_{shot_digest}"
+      if shot_key in USED_TX:
+        tg(
+            uid,
+            "⚠️ ደብል ነው! ከዚህ በፊት ተጠቅመበት ነው (ይህ ስክሪንሻት ቀድሞ ተመዝግቧል)።",
+            main_reply_kb(uid, base_url),
+        )
+        return jsonify({"ok": True})
+
+      amt_match = re.search(r"(\d+(?:\.\d+)?)", caption)
+      amt = float(amt_match.group(1)) if amt_match else 0.0
+      if amt >= 10:
+        USED_TX.add(shot_key)
+        u["registered"] = True
+        u["balance"] = round(u["balance"] + amt, 2)
+        notify_internal_photo(
+            img_bytes,
+            caption=(
+                f"📸 Telegram Screenshot Verified & Credited\n"
+                f"Ref: {shot_key}\n"
+                f"Customer ID: {uid}\n"
+                f"Amount: {amt:.2f} ETB\n"
+                f"New Balance: {u['balance']:.2f} ETB"
+            ),
+        )
+        tg(
+            uid,
+            f"✅ ገብቷል፤ ትክክለኛ ነው! በስክሪንሻት ({shot_key}) {amt:.2f} ብር ወደ"
+            f" ባላንስዎ ተጨምሯል።\n💰 አዲስ ባላንስዎ: {u['balance']:.2f} ብር",
+            main_reply_kb(uid, base_url),
+        )
+      else:
+        tg(
+            uid,
+            "❌ ስህተት ነው፤ ወደ እኛ አልገባም (የክፍያ መጠን በCaption ቢያንስ 10 ብር"
+            " መጻፍ አለበት ወይም በWeb App ውስጥ Wallet → Deposit ይጠቀሙ)።",
+            main_reply_kb(uid, base_url),
+        )
+    return jsonify({"ok": True})
+
+  if not text:
     return jsonify({"ok": True})
 
   u = get_u(uid)
@@ -718,6 +877,17 @@ def webhook():
         f"🆘 የድጋፍ ቡድን (Support):\nቀጥታ ወደ @{target_handle} በመሄድ የሚፈልጉትን ጥያቄ ይጠይቁ፤ ድጋፍ ሰጪው በቀጥታ ይመልስልዎታል።",
         sup_kb,
     )
+    return jsonify({"ok": True})
+
+  if is_admin_user(uid, sender_username) and (
+      text.lower().startswith("/broadcast ") or text.lower().startswith("/post ")
+  ):
+    ann_txt = re.sub(r"(?i)^/(broadcast|post)\s+", "", text).strip()
+    if ann_txt:
+      cnt = broadcast_announcement(text=ann_txt, exclude_uid=uid)
+      tg(uid, f"📢 ማስታወቂያው ለ {cnt} ተጠቃሚዎች ተልኳል።", main_reply_kb(uid, base_url))
+    else:
+      tg(uid, "ℹ️ ማስታወቂያ ለመላክ: /post የማስታወቂያ ጽሑፍ ብለው ይላኩ ወይም ፎቶ ከCaption ጋር ይላኩ።", main_reply_kb(uid, base_url))
     return jsonify({"ok": True})
 
   if u["registered"] and not text.startswith("/"):
@@ -842,46 +1012,70 @@ def api_deposit():
   tx = str(d.get("tx", "")).strip().upper()
   shot_b64 = str(d.get("shot_b64", "")).strip()
   amt = float(d.get("amount", 0) or 0)
+  time.sleep(6)
   if amt < 10:
-    return jsonify({"ok": False, "msg": "ዝቅተኛ ገቢ 10 ብር ነው።"})
+    return jsonify({"ok": False, "msg": "❌ ስህተት ነው፤ ወደ እኛ አልገባም (ዝቅተኛ ገቢ 10 ብር ነው)።"})
 
   u = get_u(uid)
   if mode == "shot":
     if not shot_b64:
-      return jsonify({"ok": False, "msg": "ስክሪንሻት አልተመረጠም።"})
+      return jsonify({"ok": False, "msg": "❌ ስህተት ነው፤ ወደ እኛ አልገባም (ስክሪንሻት አልተመረጠም)።"})
     raw_b64 = shot_b64.split(",", 1)[1] if "," in shot_b64 else shot_b64
     try:
       img_bytes = base64.b64decode(raw_b64)
     except Exception:
-      return jsonify({"ok": False, "msg": "የስክሪንሻት ፋይል ማንበብ አልተቻለም።"})
+      return jsonify({"ok": False, "msg": "❌ ስህተት ነው፤ ወደ እኛ አልገባም (የስክሪንሻት ፋይል ማንበብ አልተቻለም)።"})
     if not img_bytes:
-      return jsonify({"ok": False, "msg": "ባዶ ስክሪንሻት ነው።"})
-    shot_key = "SHOT_" + uuid.uuid4().hex[:12].upper()
+      return jsonify({"ok": False, "msg": "❌ ስህተት ነው፤ ወደ እኛ አልገባም (ባዶ ስክሪንሻት ነው)።"})
+    shot_digest = hashlib.sha256(img_bytes).hexdigest()[:16].upper()
+    shot_key = f"SHOT_{shot_digest}"
+    if shot_key in USED_TX:
+      return jsonify({
+          "ok": False,
+          "msg": "⚠️ ደብል ነው! ከዚህ በፊት ተጠቅመበት ነው (ይህ ስክሪንሻት ቀድሞ ተመዝግቧል)።",
+      })
     USED_TX.add(shot_key)
     u["balance"] = round(u["balance"] + amt, 2)
+    notify_internal_photo(
+        img_bytes,
+        caption=(
+            f"📸 Deposit Screenshot Verified & Credited\n"
+            f"Ref: {shot_key}\n"
+            f"Customer ID: {uid}\n"
+            f"Method: {m}\n"
+            f"Amount: {amt:.2f} ETB\n"
+            f"New Balance: {u['balance']:.2f} ETB"
+        ),
+    )
     return jsonify({
         "ok": True,
         "balance": u["balance"],
         "msg": (
-            f"✅ በ {m} ስክሪንሻት ({shot_key}) {amt:.2f} ብር በራስ-ሰር ተረጋግጦ ወደ"
-            " ባላንስዎ ተጨምሯል።"
+            f"✅ ገብቷል፤ ትክክለኛ ነው! በ {m} ስክሪንሻት ({shot_key}) {amt:.2f} ብር"
+            " ተረጋግጦ ወደ ባላንስዎ ተጨምሯል።"
         ),
     })
 
-  if not valid_tx(m, tx):
+  st = check_tx_status(m, tx)
+  if st == "duplicate":
     return jsonify({
         "ok": False,
-        "msg": (
-            "❌ ስህተት ነው፤ ይህ የ FT / የክፍያ ኮድ ትክክል አይደለም ወይም ቀድሞ"
-            " ተጠቅሟል።"
-        ),
+        "msg": "⚠️ ደብል ነው! ከዚህ በፊት ተጠቅመበት ነው (ይህ ኮድ ቀድሞ ጥቅም ላይ ውሏል)።",
+    })
+  if st != "ok":
+    return jsonify({
+        "ok": False,
+        "msg": "❌ ስህተት ነው፤ ወደ እኛ አልገባም (ይህ የክፍያ ኮድ ትክክል አይደለም ወይም አልገባም)።",
     })
   USED_TX.add(tx)
   u["balance"] = round(u["balance"] + amt, 2)
   return jsonify({
       "ok": True,
       "balance": u["balance"],
-      "msg": f"✅ በ {m} ({tx}) {amt:.2f} ብር ተረጋግጦ ወደ ባላንስዎ ተጨምሯል።",
+      "msg": (
+          f"✅ ገብቷል፤ ትክክለኛ ነው! በ {m} ({tx}) {amt:.2f} ብር ተረጋግጦ ወደ"
+          " ባላንስዎ ተጨምሯል።"
+      ),
   })
 
 
