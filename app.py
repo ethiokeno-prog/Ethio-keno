@@ -34,7 +34,7 @@ LIVE_TICKETS = []
 PAYTABLE = {
     1: {1: 3.5},
     2: {2: 10},
-    3: {2: 1.5, 3: 50},
+    3: {2: 1.5, 3: 30},
     4: {2: 1, 3: 10, 4: 80},
     5: {3: 2, 4: 15, 5: 150},
     6: {3: 1.5, 4: 4, 5: 60, 6: 500},
@@ -351,29 +351,34 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
 
 <div id="p-wallet" class="panel">
   <div class="box">
-    <strong>💳 Deposit (24/7 Open — Instant Verification)</strong>
-    <div class="acct-card">
-      <div><b>Telebirr:</b> <span id="acc-tb">__TELEBIRR__</span></div>
-      <button class="copy-btn" onclick="copyById('acc-tb', this)">Copy</button>
-    </div>
-    <div class="acct-card">
-      <div><b>Commercial Bank of Ethiopia (CBE):</b> <span id="acc-cbe">__CBE__</span></div>
-      <button class="copy-btn" onclick="copyById('acc-cbe', this)">Copy</button>
-    </div>
-    <div style="color:#4ade80;margin-top:6px">Enter FT / payment reference code or upload screenshot (unused only).</div>
+    <strong>💳 Deposit (24/7 Open — 2-Step Verification)</strong>
+    <div style="font-size:11px;color:#9ca3af;margin-top:4px">1) መጠን (ቢያንስ 10 ብር) እና አማራጭ መርጠው ቀጥል ይበሉ — የክፍያ አካውንት ይታያል።<br>2) ከከፈሉ በኋላ የFT/Confirmation ኮድ ወይም ስክሪንሻት አስገብተው ያረጋግጡ።</div>
     <select id="dm"><option value="Telebirr">Telebirr</option><option value="CBE">CBE</option></select>
     <input type="number" id="da" placeholder="Amount in ETB (min 10)" value="50">
-    <select id="dmode" onchange="toggleDepMode()">
-      <option value="code">FT / Payment Code</option>
-      <option value="shot">Payment Screenshot</option>
-    </select>
-    <div id="d-code-wrap">
-      <input type="text" id="dt" placeholder="FT / Payment Code (e.g. FT26328XXXX)">
+    <button class="act" style="background:#2563eb;margin-bottom:8px" onclick="showDepositStep2()">ቀጥል (Continue)</button>
+    <div id="dep-step2" style="display:none;background:#0f131a;border:1px solid #262e3d;border-radius:8px;padding:9px;margin-bottom:6px">
+      <div style="color:#fbbf24;font-weight:800;font-size:11px;margin-bottom:6px">⏳ Awaiting payment — ወደዚህ አካውንት ይክፈሉ:</div>
+      <div id="dep-tb-card" class="acct-card">
+        <div><b>Telebirr:</b> <span id="acc-tb">__TELEBIRR__</span></div>
+        <button class="copy-btn" onclick="copyById('acc-tb', this)">Copy</button>
+      </div>
+      <div id="dep-cbe-card" class="acct-card">
+        <div><b>CBE:</b> <span id="acc-cbe">__CBE__</span></div>
+        <button class="copy-btn" onclick="copyById('acc-cbe', this)">Copy</button>
+      </div>
+      <div style="color:#4ade80;margin-top:8px;font-size:11px">Confirmation / FT Code ወይም Screenshot ያስገቡ:</div>
+      <select id="dmode" onchange="toggleDepMode()">
+        <option value="code">FT / Confirmation Code</option>
+        <option value="shot">Payment Screenshot</option>
+      </select>
+      <div id="d-code-wrap">
+        <input type="text" id="dt" placeholder="Confirmation / FT Code (e.g. FT26328XXXX)">
+      </div>
+      <div id="d-shot-wrap" style="display:none">
+        <input type="file" id="df" accept="image/*">
+      </div>
+      <button class="act" onclick="dep()">Confirm Deposit</button>
     </div>
-    <div id="d-shot-wrap" style="display:none">
-      <input type="file" id="df" accept="image/*">
-    </div>
-    <button class="act" onclick="dep()">Confirm Deposit</button>
     <div id="dmsg" style="margin-top:6px;color:#93c5fd"></div>
   </div>
   <div class="box">
@@ -389,10 +394,49 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
 
 <div id="p-hist" class="panel"><div class="box"><strong>📜 የጨዋታ ታሪክ</strong><div id="hlist">ምንም ታሪክ የለም።</div></div></div>
 
-<div class="nav">
+<div id="p-rules" class="panel">
+  <div class="box">
+    <strong>📜 የጨዋታ ህጎች እና ክፍያ (RULES)</strong>
+    <p style="margin:6px 0">በዚህ ህግ መሠረት ክፍያችንን እንከፍላለን። ከ1 እስከ 10 ቁጥሮች መርጠው በሚወጡት 20 ቁጥሮች ውስጥ በሚገናኙት ብዛት መሠረት መደቡ በMultiplier ይባዛል (ለምሳሌ 3 ቁጥር መርጠው 2 ቢገናኙ 1.5x፣ <b>3ቱም ከወጡ 30x — 30 ብር</b>)።</p>
+    <div style="overflow-x:auto;margin-top:8px">
+      <table style="width:100%;border-collapse:collapse;font-size:11px;text-align:center">
+        <thead>
+          <tr style="background:#1f242d;color:#4ade80">
+            <th style="padding:5px;border:1px solid #2b303b">ምርጫ</th>
+            <th style="padding:5px;border:1px solid #2b303b">1</th>
+            <th style="padding:5px;border:1px solid #2b303b">2</th>
+            <th style="padding:5px;border:1px solid #2b303b">3</th>
+            <th style="padding:5px;border:1px solid #2b303b">4</th>
+            <th style="padding:5px;border:1px solid #2b303b">5</th>
+            <th style="padding:5px;border:1px solid #2b303b">6</th>
+            <th style="padding:5px;border:1px solid #2b303b">7</th>
+            <th style="padding:5px;border:1px solid #2b303b">8</th>
+            <th style="padding:5px;border:1px solid #2b303b">9</th>
+            <th style="padding:5px;border:1px solid #2b303b">10</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td style="padding:4px;border:1px solid #2b303b"><b>1</b></td><td style="border:1px solid #2b303b">3.5</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+          <tr><td style="padding:4px;border:1px solid #2b303b"><b>2</b></td><td>-</td><td style="border:1px solid #2b303b">10</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+          <tr><td style="padding:4px;border:1px solid #2b303b"><b>3</b></td><td>-</td><td style="border:1px solid #2b303b">1.5</td><td style="border:1px solid #2b303b;color:#4ade80;font-weight:800">30</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+          <tr><td style="padding:4px;border:1px solid #2b303b"><b>4</b></td><td>-</td><td style="border:1px solid #2b303b">1</td><td style="border:1px solid #2b303b">10</td><td style="border:1px solid #2b303b">80</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+          <tr><td style="padding:4px;border:1px solid #2b303b"><b>5</b></td><td>-</td><td>-</td><td style="border:1px solid #2b303b">2</td><td style="border:1px solid #2b303b">15</td><td style="border:1px solid #2b303b">150</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+          <tr><td style="padding:4px;border:1px solid #2b303b"><b>6</b></td><td>-</td><td>-</td><td style="border:1px solid #2b303b">1.5</td><td style="border:1px solid #2b303b">4</td><td style="border:1px solid #2b303b">60</td><td style="border:1px solid #2b303b">500</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+          <tr><td style="padding:4px;border:1px solid #2b303b"><b>7</b></td><td>-</td><td>-</td><td style="border:1px solid #2b303b">1</td><td style="border:1px solid #2b303b">3</td><td style="border:1px solid #2b303b">15</td><td style="border:1px solid #2b303b">80</td><td style="border:1px solid #2b303b">1000</td><td>-</td><td>-</td><td>-</td></tr>
+          <tr><td style="padding:4px;border:1px solid #2b303b"><b>8</b></td><td>-</td><td>-</td><td>-</td><td style="border:1px solid #2b303b">2</td><td style="border:1px solid #2b303b">10</td><td style="border:1px solid #2b303b">25</td><td style="border:1px solid #2b303b">200</td><td style="border:1px solid #2b303b">2000</td><td>-</td><td>-</td></tr>
+          <tr><td style="padding:4px;border:1px solid #2b303b"><b>9</b></td><td>-</td><td>-</td><td>-</td><td style="border:1px solid #2b303b">2</td><td style="border:1px solid #2b303b">5</td><td style="border:1px solid #2b303b">15</td><td style="border:1px solid #2b303b">125</td><td style="border:1px solid #2b303b">800</td><td style="border:1px solid #2b303b">5000</td><td>-</td></tr>
+          <tr><td style="padding:4px;border:1px solid #2b303b"><b>10</b></td><td>-</td><td>-</td><td>-</td><td>-</td><td style="border:1px solid #2b303b">2</td><td style="border:1px solid #2b303b">10</td><td style="border:1px solid #2b303b">30</td><td style="border:1px solid #2b303b">100</td><td style="border:1px solid #2b303b">1000</td><td style="border:1px solid #2b303b">10000</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="nav" style="grid-template-columns:repeat(4,1fr)">
   <button class="nb active" id="n-game" onclick="tab('game')">ጨዋታ</button>
   <button class="nb" id="n-wallet" onclick="tab('wallet')">Wallet</button>
   <button class="nb" id="n-hist" onclick="tab('hist')">ታሪክ</button>
+  <button class="nb" id="n-rules" onclick="tab('rules')">ህጎች</button>
 </div>
 
 <script>
@@ -400,7 +444,7 @@ const tg=window.Telegram&&window.Telegram.WebApp?window.Telegram.WebApp:null; if
 const params=new URLSearchParams(window.location.search);
 const uid=params.get("uid")||(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?String(tg.initDataUnsafe.user.id):"874411134");
 document.getElementById("uid-lbl").textContent=uid;
-const PT={1:{1:3.5},2:{2:10},3:{2:1.5,3:50},4:{2:1,3:10,4:80},5:{3:2,4:15,5:150},6:{3:1.5,4:4,5:60,6:500},7:{3:1,4:3,5:15,6:80,7:1000},8:{4:2,5:10,6:25,7:200,8:2000},9:{4:2,5:5,6:15,7:125,8:800,9:5000},10:{5:2,6:10,7:30,8:100,9:1000,10:10000}};
+const PT={1:{1:3.5},2:{2:10},3:{2:1.5,3:30},4:{2:1,3:10,4:80},5:{3:2,4:15,5:150},6:{3:1.5,4:4,5:60,6:500},7:{3:1,4:3,5:15,6:80,7:1000},8:{4:2,5:10,6:25,7:200,8:2000},9:{4:2,5:5,6:15,7:125,8:800,9:5000},10:{5:2,6:10,7:30,8:100,9:1000,10:10000}};
 let bal=0,bet=2,drawing=false,roundSec=60,serverOffsetMs=0,lastTriggeredRound=-1,queued=null,tickets=[],drawnSoFar=new Set(),roundDone=false; const picks=new Set();
 function setBetVal(v){
   if(drawing)return;
@@ -457,7 +501,17 @@ function ui(){
   document.getElementById("mwin").textContent=(bet*mx).toFixed(2)+" ብር";
 }
 
-function tab(k){["game","wallet","hist"].forEach(x=>{document.getElementById("p-"+x).classList.toggle("active",x===k);document.getElementById("n-"+x).classList.toggle("active",x===k);});load();}
+function tab(k){["game","wallet","hist","rules"].forEach(x=>{document.getElementById("p-"+x).classList.toggle("active",x===k);document.getElementById("n-"+x).classList.toggle("active",x===k);});load();}
+function showDepositStep2(){
+  const amt=Number(document.getElementById("da").value||0);
+  if(amt<10)return alert("ዝቅተኛ ገቢ 10 ብር ነው።");
+  const m=document.getElementById("dm").value;
+  document.getElementById("dep-tb-card").style.display=m==="Telebirr"?"flex":"none";
+  document.getElementById("dep-cbe-card").style.display=m==="CBE"?"flex":"none";
+  document.getElementById("dep-step2").style.display="block";
+  document.getElementById("dmsg").style.color="#fcd34d";
+  document.getElementById("dmsg").textContent="⏳ ክፍያ በመጠባበቅ ላይ (Awaiting payment) — ከከፈሉ በኋላ ኮድ ወይም ስክሪንሻት አስገብተው Confirm ይበሉ።";
+}
 function toggleDepMode(){const m=document.getElementById("dmode").value;document.getElementById("d-code-wrap").style.display=m==="code"?"block":"none";document.getElementById("d-shot-wrap").style.display=m==="shot"?"block":"none";}
 function renderTickets(){
   const wrap=document.getElementById("tickets-list");
@@ -490,8 +544,8 @@ async function load(){
     document.getElementById("wlist").innerHTML=d.wds.length?d.wds.slice().reverse().map(w=>`<div style="padding:6px 0;border-bottom:1px solid #2b303b">${w.id} | ${w.method} (${w.dest}) | ${w.amount} ብር | <b>${w.status}</b>${w.status==="Pending"?`<br><button class="appb" onclick="appw('${w.id}')">አጽድቅ (Complete)</button>`:""}</div>`).join(""):"ምንም ጥያቄ የለም።";
   }catch(e){}
 }
-function clearSelectionsAndBoard(){picks.clear();document.querySelectorAll(".t").forEach(x=>x.classList.remove("sel","hit","miss"));ui();}
-function resetDrawStage(){drawnSoFar.clear();roundDone=false;document.querySelectorAll(".t").forEach(x=>x.classList.remove("hit","miss"));document.getElementById("strip").innerHTML="";document.getElementById("dprog").textContent="0 / 20";document.getElementById("ball").textContent="--";const bn=document.getElementById("out-banner");bn.className="banner";bn.textContent="";}
+function clearSelectionsAndBoard(){picks.clear();document.querySelectorAll(".t").forEach(x=>x.classList.remove("sel"));ui();}
+function resetDrawStage(){drawnSoFar.clear();roundDone=false;document.getElementById("strip").innerHTML="";document.getElementById("dprog").textContent="0 / 20";document.getElementById("ball").textContent="--";const bn=document.getElementById("out-banner");bn.className="banner";bn.textContent="";}
 async function lockBet(){
   if(drawing)return;
   if(!picks.size)return alert("ቢያንስ 1 ቁጥር ይምረጡ");
@@ -517,8 +571,8 @@ async function runRoundDraw(){
     const n=d.drawn[i]; const isHit=watched.has(n); drawnSoFar.add(n);
     document.getElementById("ball").textContent=n;
     document.getElementById("dprog").textContent=`${i+1} / 20`;
-    const ch=document.createElement("span");ch.className="chip"+(isHit?" h":"");ch.textContent=n;document.getElementById("strip").appendChild(ch);
-    const el=document.querySelector(`.t[data-n="${n}"]`);if(el)el.classList.add(isHit?"hit":"miss");
+    const ch=document.createElement("span");ch.className="chip"+(activeBet&&activeBet.picks.includes(n)?" h":"");ch.textContent=n;document.getElementById("strip").appendChild(ch);
+    
     renderTickets();
     await new Promise(res=>setTimeout(res,2000));
   }
@@ -603,13 +657,7 @@ def set_my_webhook():
   try:
     m = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
-        json={
-            "menu_button": {
-                "type": "web_app",
-                "text": "Play",
-                "web_app": {"url": base + "/"},
-            }
-        },
+        json={"menu_button": {"type": "commands"}},
         timeout=10,
     )
     menu_res = m.json()
