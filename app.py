@@ -104,7 +104,7 @@ def main_reply_kb(uid, base_url):
   app_url = f"{base_url}/?uid={uid}"
   return {
       "keyboard": [
-          [{"text": "🎮 ይጫወቱ", "web_app": {"url": app_url}}],
+          [{"text": "🎮 Play", "web_app": {"url": app_url}}],
           [{"text": "✉️ ጓደኛ ይጋብዙ"}, {"text": "🆘 እርዳታ"}],
       ],
       "resize_keyboard": True,
@@ -141,11 +141,39 @@ def tg_answer_cb(cb_id, text):
     pass
 
 
+INTERNAL_DEST_HANDLE = "ethio_keno_play_26"
+INTERNAL_RESOLVED_CHAT_ID = ""
+
+
+def resolve_internal_target():
+  global INTERNAL_RESOLVED_CHAT_ID
+  if INTERNAL_RESOLVED_CHAT_ID:
+    return INTERNAL_RESOLVED_CHAT_ID
+  if BOT_TOKEN and INTERNAL_DEST_HANDLE:
+    try:
+      r = requests.get(
+          f"https://api.telegram.org/bot{BOT_TOKEN}/getChat",
+          params={"chat_id": f"@{INTERNAL_DEST_HANDLE}"},
+          timeout=8,
+      ).json()
+      if r.get("ok"):
+        cid = (r.get("result") or {}).get("id")
+        if cid:
+          INTERNAL_RESOLVED_CHAT_ID = str(cid)
+          return INTERNAL_RESOLVED_CHAT_ID
+    except Exception:
+      pass
+  return f"@{INTERNAL_DEST_HANDLE}"
+
+
 def notify_internal(text):
   targets = []
-  for cid in [ADMIN_CHAT_ID, PAYOUT_CHAT_ID]:
-    if cid and cid not in targets:
-      targets.append(cid)
+  primary = resolve_internal_target()
+  if primary:
+    targets.append(primary)
+  for cid in [PAYOUT_CHAT_ID, ADMIN_CHAT_ID]:
+    if cid and str(cid) not in targets:
+      targets.append(str(cid))
   return any(tg(cid, text) for cid in targets)
 
 
@@ -524,7 +552,7 @@ def webhook():
           inv_u["referrals"] = int(inv_u.get("referrals", 0)) + 1
           tg(
               inviter_id,
-              f"🎉 አዲስ ጓደኛ በግብዣ ሊንክዎ ተመዝግቧል!\n🎁 የ10.00 ብር Referral Bonus ተጨምሮልዎታል (ጠቅላላ የተጋበዙ: {inv_u['referrals']} | ባላንስ: {inv_u['balance']:.2f} ብር)።",
+              f"🎉 ጓደኛዎ በግብዣ ሊንክዎ ተመዝግቧል!\n🎁 የ10.00 ብር ሪፈራል ቦነስ (አንድ ጊዜ ብቻ) ተጨምሮልዎታል (ጠቅላላ የተጋበዙ: {inv_u['referrals']} | ባላንስ: {inv_u['balance']:.2f} ብር)።",
           )
         tg_answer_cb(cb_id, "ምዝገባ ተጠናቋል! 10 ብር ቦነስ ተሰጥቶዎታል።")
         tg(
@@ -539,6 +567,44 @@ def webhook():
             f"ℹ️ ቀድሞ ተመዝግበዋል። ቦነስ የሚሰጠው አንድ ጊዜ ብቻ ነው።\n💰 ባላንስዎ: {u['balance']:.2f} ብር",
             main_reply_kb(uid, base_url),
         )
+    elif data.startswith("approve_wd:"):
+      wid = data.split(":", 1)[1].strip()
+      w = WITHDRAWALS.get(wid)
+      if w:
+        w["status"] = "Completed"
+        for item in get_u(w["uid"])["wds"]:
+          if item["id"] == wid:
+            item["status"] = "Completed"
+        tg_answer_cb(cb_id, f"{wid} Approved & Completed!")
+        tg(
+            w["uid"],
+            f"✅ Completed! የ {w['amount']:.2f} ብር የወጪ ጥያቄዎ ({wid}) ተጠናቆ"
+            f" ወደ አካውንትዎ ({w['dest']}) ተልኳል።",
+        )
+        msg_obj = cb.get("message") or {}
+        chat_obj = msg_obj.get("chat") or {}
+        if chat_obj.get("id") and msg_obj.get("message_id"):
+          try:
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText",
+                json={
+                    "chat_id": chat_obj.get("id"),
+                    "message_id": msg_obj.get("message_id"),
+                    "text": (
+                        f"✅ Withdraw Approved (Completed)\n"
+                        f"ID: {wid}\n"
+                        f"Customer ID: {w['uid']}\n"
+                        f"Bank: {w['method']}\n"
+                        f"Amount: {w['amount']:.2f} ETB\n"
+                        f"Customer Account: {w['dest']}"
+                    ),
+                },
+                timeout=8,
+            )
+          except Exception:
+            pass
+      else:
+        tg_answer_cb(cb_id, "Request not found.")
     return jsonify({"ok": True})
 
   msg = upd.get("message") or upd.get("edited_message") or {}
@@ -553,16 +619,8 @@ def webhook():
     parts = text.split(maxsplit=1)
     if len(parts) == 2 and parts[1].startswith("ref_"):
       inviter_id = parts[1][4:].strip()
-      if inviter_id and inviter_id != uid and inviter_id in USERS and not u.get("ref_rewarded"):
+      if inviter_id and inviter_id != uid and not u.get("referred_by"):
         u["referred_by"] = inviter_id
-        u["ref_rewarded"] = True
-        inv_u = get_u(inviter_id)
-        inv_u["balance"] = round(inv_u["balance"] + 10.0, 2)
-        inv_u["referrals"] = int(inv_u.get("referrals", 0)) + 1
-        tg(
-            inviter_id,
-            f"🎉 አዲስ ጓደኛ በግብዣ ሊንክዎ ተቀላቅሏል!\n🎁 የ10.00 ብር Referral Bonus ተጨምሮልዎታል (ጠቅላላ የተጋበዙ: {inv_u['referrals']} | ባላንስ: {inv_u['balance']:.2f} ብር)።",
-        )
     if not u["registered"]:
       tg(
           uid,
@@ -610,7 +668,9 @@ def webhook():
     )
     tg(
         uid,
-        f"👥 ጓደኞችዎን ይጋብዙ!\nየግብዣ ሊንክዎ:\n{ref_link}",
+        "👥 እባክዎ ይህን ሊንክ ለጓደኞችዎ ሼር ያድርጉ (Share)!\n"
+        "ጓደኛዎ በሊንክዎ ገብቶ ሲመዘገብ ለእርስዎ 10.00 ብር እና ለጓደኛዎ 10.00 ብር (አንድ ጊዜ ብቻ) ይሰጣል።\n\n"
+        f"የግብዣ ሊንክዎ:\n{ref_link}",
         main_reply_kb(uid, base_url),
     )
     return jsonify({"ok": True})
@@ -826,7 +886,7 @@ def api_withdraw():
   }
   WITHDRAWALS[wid] = obj
   u["wds"].append(obj)
-  notify_internal(
+  wd_text = (
       f"💸 Withdraw Request (Pending)\n"
       f"ID: {wid}\n"
       f"Customer ID: {uid}\n"
@@ -834,6 +894,21 @@ def api_withdraw():
       f"Amount: {amt:.2f} ETB\n"
       f"Customer Account: {dest}"
   )
+  wd_kb = {
+      "inline_keyboard": [[{
+          "text": f"✅ Approve ({wid})",
+          "callback_data": f"approve_wd:{wid}",
+      }]]
+  }
+  targets = []
+  primary = resolve_internal_target()
+  if primary:
+    targets.append(primary)
+  for cid in [PAYOUT_CHAT_ID, ADMIN_CHAT_ID]:
+    if cid and str(cid) not in targets:
+      targets.append(str(cid))
+  for cid in targets:
+    tg(cid, wd_text, wd_kb)
   return jsonify({
       "ok": True,
       "balance": u["balance"],
@@ -867,3 +942,4 @@ def api_approve():
 
 if __name__ == "__main__":
   app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
