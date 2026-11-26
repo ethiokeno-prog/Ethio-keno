@@ -517,13 +517,30 @@ def home():
 
 @app.route("/set_my_webhook")
 def set_my_webhook():
-  target = current_base_url() + "/webhook"
+  base = current_base_url()
+  target = base + "/webhook"
   r = requests.get(
       f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
       params={"url": target},
       timeout=12,
   )
-  return jsonify({"target": target, "telegram_response": r.json()})
+  menu_res = None
+  try:
+    m = requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
+        json={
+            "menu_button": {
+                "type": "web_app",
+                "text": "Play",
+                "web_app": {"url": base + "/"},
+            }
+        },
+        timeout=10,
+    )
+    menu_res = m.json()
+  except Exception:
+    pass
+  return jsonify({"target": target, "telegram_response": r.json(), "menu_button": menu_res})
 
 
 @app.route("/webhook", methods=["POST"])
@@ -552,7 +569,7 @@ def webhook():
           inv_u["referrals"] = int(inv_u.get("referrals", 0)) + 1
           tg(
               inviter_id,
-              f"🎉 ጓደኛዎ በግብዣ ሊንክዎ ተመዝግቧል!\n🎁 የ10.00 ብር ሪፈራል ቦነስ (አንድ ጊዜ ብቻ) ተጨምሮልዎታል (ጠቅላላ የተጋበዙ: {inv_u['referrals']} | ባላንስ: {inv_u['balance']:.2f} ብር)።",
+              f"🎉 ጓደኛዎ በግብዣ ሊንክዎ ተመዝግቧል!\n🎁 የሪፈራል ሽልማት (አንድ ጊዜ ብቻ) ተጨምሮልዎታል (ጠቅላላ የተጋበዙ: {inv_u['referrals']} | ባላንስ: {inv_u['balance']:.2f} ብር)።",
           )
         tg_answer_cb(cb_id, "ምዝገባ ተጠናቋል! 10 ብር ቦነስ ተሰጥቶዎታል።")
         tg(
@@ -666,22 +683,40 @@ def webhook():
         if bot_info_user
         else f"{base_url}/?ref={uid}"
     )
+    share_url = (
+        "https://t.me/share/url?"
+        + requests.compat.urlencode({
+            "url": ref_link,
+            "text": "ጓደኛዬ ወደ ETHIO FAST KENO ይቀላቀሉ!",
+        })
+    )
+    share_kb = {
+        "inline_keyboard": [[{
+            "text": "Share Referral Link ↗",
+            "url": share_url,
+        }]]
+    }
     tg(
         uid,
-        "👥 እባክዎ ይህን ሊንክ ለጓደኞችዎ ሼር ያድርጉ (Share)!\n"
-        "ጓደኛዎ በሊንክዎ ገብቶ ሲመዘገብ ለእርስዎ 10.00 ብር እና ለጓደኛዎ 10.00 ብር (አንድ ጊዜ ብቻ) ይሰጣል።\n\n"
-        f"የግብዣ ሊንክዎ:\n{ref_link}",
-        main_reply_kb(uid, base_url),
+        "🚀 ጓደኞችዎን ይጋብዙ! ከታች ያለውን ቁልፍ በመጫን ሊንኩን ለጓደኞችዎ ሼር ያድርጉ:\n"
+        f"{ref_link}",
+        share_kb,
     )
     return jsonify({"ok": True})
 
   if text in ("🆘 እርዳታ", "🆘 Support", "Support"):
-    sup_line = f"\nቀጥታ እርዳታ: @{SUPPORT_HANDLE}" if SUPPORT_HANDLE else ""
+    target_handle = (SUPPORT_HANDLE or INTERNAL_DEST_HANDLE or "ethio_keno_play_26").lstrip("@")
+    sup_url = f"https://t.me/{target_handle}"
+    sup_kb = {
+        "inline_keyboard": [[{
+            "text": "Talk to Support ↗",
+            "url": sup_url,
+        }]]
+    }
     tg(
         uid,
-        "🆘 የድጋፍ ቡድን:\nማንኛውንም ጥያቄ ወይም እርዳታ እዚህ መልዕክት ይጻፉ፤ የድጋፍ ቡድኑ"
-        f" ይመልስልዎታል።{sup_line}",
-        main_reply_kb(uid, base_url),
+        f"🆘 የድጋፍ ቡድን (Support):\nቀጥታ ወደ @{target_handle} በመሄድ የሚፈልጉትን ጥያቄ ይጠይቁ፤ ድጋፍ ሰጪው በቀጥታ ይመልስልዎታል።",
+        sup_kb,
     )
     return jsonify({"ok": True})
 
@@ -913,8 +948,7 @@ def api_withdraw():
       "ok": True,
       "balance": u["balance"],
       "msg": (
-          f"⏳ የ {amt:.2f} ብር የወጪ ጥያቄዎ ({wid}) በመጠባበቅ ላይ (Pending) ነው"
-          " (ከ20–30 ደቂቃ ሊወስድ ይችላል)።"
+          f"⏳ የ {amt:.2f} ብር የወጪ ጥያቄዎ ({wid}) በመጠባበቅ ላይ (Pending) ነው፤ እስኪደርስዎ በሂደት ላይ ይቆያል።"
       ),
   })
 
@@ -942,4 +976,3 @@ def api_approve():
 
 if __name__ == "__main__":
   app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
