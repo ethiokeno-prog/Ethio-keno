@@ -23,7 +23,7 @@ TELEBIRR_ACCOUNT = (
 CBE_ACCOUNT = (
     os.environ.get("CBE_ACCOUNT") or "1000682528641 - Enyachew Amerga"
 ).strip()
-WEBAPP_URL = (os.environ.get("WEBAPP_URL") or "").strip().rstrip("/")
+WEBAPP_URL = (os.environ.get("WEBAPP_URL") or "https://ethio-keno-exlm.onrender.com").strip().rstrip("/")
 
 EAT = timezone(timedelta(hours=3))
 USERS, USED_TX, WITHDRAWALS = {}, set(), {}
@@ -41,6 +41,28 @@ PAYTABLE = {
     9: {4: 2, 5: 5, 6: 15, 7: 125, 8: 800, 9: 5000},
     10: {5: 2, 6: 10, 7: 30, 8: 100, 9: 1000, 10: 10000},
 }
+
+
+BOT_USERNAME_CACHE = ""
+
+
+def get_bot_username():
+  global BOT_USERNAME_CACHE
+  if BOT_USERNAME_CACHE:
+    return BOT_USERNAME_CACHE
+  if not BOT_TOKEN:
+    return ""
+  try:
+    me = requests.get(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=8
+    ).json()
+    if me.get("ok"):
+      uname = ((me.get("result") or {}).get("username") or "").strip().lstrip("@")
+      if uname:
+        BOT_USERNAME_CACHE = uname
+  except Exception:
+    pass
+  return BOT_USERNAME_CACHE
 
 
 def is_wd_hours():
@@ -194,13 +216,22 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
   <div id="out-banner" class="banner"></div>
   <div class="grid" id="grid"></div>
   <div class="ctrl">
-    <div class="row">
-      <button class="btn" onclick="sbet(-10)">-</button><div class="val" id="bval">10</div><button class="btn" onclick="sbet(10)">+</button>
-      <button class="btn" onclick="sbet(bet)">X2</button><button class="btn" onclick="bet=Math.max(10,Math.floor(bal));ui()">ከፍተኛ</button>
+    <div class="row" style="grid-template-columns:36px 1fr 36px 44px 54px">
+      <button class="btn" onclick="stepBet(-2)">-</button>
+      <input type="number" id="bval" min="2" step="any" value="2" oninput="onBetInput(this.value)" style="margin:0;height:35px;text-align:center;font-weight:800;background:#151920;border:1px solid #374151;border-radius:8px;color:#fff">
+      <button class="btn" onclick="stepBet(2)">+</button>
+      <button class="btn" onclick="setBetVal(bet*2)">X2</button>
+      <button class="btn" onclick="setBetVal(Math.max(2,Math.floor(bal)))">Max</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:7px">
+      <button class="btn" onclick="setBetVal(2)">2 ብር</button>
+      <button class="btn" onclick="setBetVal(4)">4 ብር</button>
+      <button class="btn" onclick="setBetVal(6)">6 ብር</button>
+      <button class="btn" onclick="setBetVal(10)">10 ብር</button>
     </div>
     <button class="betbtn" id="betbtn" onclick="lockBet()">መደብ ያስገቡ (BET)</button>
   </div>
-  <div class="box" id="gmsg">የመምረጫ ሰዓት 1 ደቂቃ ነው። ከ1 እስከ 10 ቁጥሮች እና መደብ (ቢያንስ 10 ብር) መርጠው ይጫኑ ወይም 01:00 ሲያልቅ 20 ቁጥሮች ይወጣሉ።</div>
+  <div class="box" id="gmsg">የመምረጫ ሰዓት 1 ደቂቃ ነው። ከ1 እስከ 10 ቁጥሮች እና መደብ (ቢያንስ 2 ብር) መርጠው ይጫኑ ወይም 01:00 ሲያልቅ 20 ቁጥሮች ይወጣሉ።</div>
   <div class="box">
     <div style="display:flex;justify-content:space-between;align-items:center">
       <strong>🎟️ የተቆረጡ መደቦች</strong>
@@ -223,47 +254,47 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
 
 <div id="p-wallet" class="panel">
   <div class="box">
-    <strong>💳 ገቢ ማስገቢያ (24 ሰዓት ክፍት ነው — አውቶማቲክ ማረጋገጫ)</strong>
+    <strong>💳 Deposit (24/7 Open — Instant Verification)</strong>
     <div class="acct-card">
-      <div><b>ቴሌብር:</b> <span id="acc-tb">__TELEBIRR__</span></div>
-      <button class="copy-btn" onclick="copyById('acc-tb', this)">ቅዳ</button>
+      <div><b>Telebirr:</b> <span id="acc-tb">__TELEBIRR__</span></div>
+      <button class="copy-btn" onclick="copyById('acc-tb', this)">Copy</button>
     </div>
     <div class="acct-card">
-      <div><b>ኢትዮጵያ ንግድ ባንክ (CBE):</b> <span id="acc-cbe">__CBE__</span></div>
-      <button class="copy-btn" onclick="copyById('acc-cbe', this)">ቅዳ</button>
+      <div><b>Commercial Bank of Ethiopia (CBE):</b> <span id="acc-cbe">__CBE__</span></div>
+      <button class="copy-btn" onclick="copyById('acc-cbe', this)">Copy</button>
     </div>
-    <div style="color:#4ade80;margin-top:6px">የ FT ኮድ ማስገባት ወይም ስክሪንሻት መላክ ይችላሉ (ድጋሚ ጥቅም ላይ ያልዋለ መሆን አለበት)።</div>
-    <select id="dm"><option value="Telebirr">ቴሌብር</option><option value="CBE">ንግድ ባንክ (CBE)</option></select>
-    <input type="number" id="da" placeholder="የብር መጠን (ቢያንስ 10)" value="50">
+    <div style="color:#4ade80;margin-top:6px">Enter FT / payment reference code or upload screenshot (unused only).</div>
+    <select id="dm"><option value="Telebirr">Telebirr</option><option value="CBE">CBE</option></select>
+    <input type="number" id="da" placeholder="Amount in ETB (min 10)" value="50">
     <select id="dmode" onchange="toggleDepMode()">
-      <option value="code">የ FT / የክፍያ ኮድ ማስገባት</option>
-      <option value="shot">ስክሪንሻት ማስገባት</option>
+      <option value="code">FT / Payment Code</option>
+      <option value="shot">Payment Screenshot</option>
     </select>
     <div id="d-code-wrap">
-      <input type="text" id="dt" placeholder="የ FT / የክፍያ ኮድ (ለምሳሌ FT26328XXXX)">
+      <input type="text" id="dt" placeholder="FT / Payment Code (e.g. FT26328XXXX)">
     </div>
     <div id="d-shot-wrap" style="display:none">
       <input type="file" id="df" accept="image/*">
     </div>
-    <button class="act" onclick="dep()">ገቢ ያረጋግጡ</button>
+    <button class="act" onclick="dep()">Confirm Deposit</button>
     <div id="dmsg" style="margin-top:6px;color:#93c5fd"></div>
   </div>
   <div class="box">
-    <strong>💸 ገንዘብ ማውጣት (ከጠዋት 2:00 እስከ ማታ 3:00 ብቻ)</strong><br>
-    <input type="number" id="wa" placeholder="የሚወጣውን የብር መጠን ያስገቡ" value="10">
-    <select id="wm"><option value="Telebirr">ቴሌብር</option><option value="CBE">ንግድ ባንክ (CBE)</option></select>
-    <input type="text" id="wd" placeholder="የአካውንት ቁጥር እና ሙሉ ስም (ለምሳሌ 09... / 1000... - ስም)">
-    <button class="act amb" onclick="wdr()">ወጪ ይጠይቁ</button>
+    <strong>💸 Withdraw (08:00 AM – 09:00 PM EAT)</strong><br>
+    <input type="number" id="wa" placeholder="Withdraw amount in ETB" value="10">
+    <select id="wm"><option value="Telebirr">Telebirr</option><option value="CBE">CBE</option></select>
+    <input type="text" id="wd" placeholder="Account number & full name (e.g. 09... / 1000... - Name)">
+    <button class="act amb" onclick="wdr()">Request Withdraw</button>
     <div id="wmsg" style="margin-top:6px;color:#fcd34d"></div>
   </div>
-  <div class="box"><strong>⏳ የወጪ ጥያቄ ሁኔታ</strong><div id="wlist">ምንም ጥያቄ የለም።</div></div>
+  <div class="box"><strong>⏳ Withdraw Status</strong><div id="wlist">No withdraw requests yet.</div></div>
 </div>
 
 <div id="p-hist" class="panel"><div class="box"><strong>📜 የጨዋታ ታሪክ</strong><div id="hlist">ምንም ታሪክ የለም።</div></div></div>
 
 <div class="nav">
   <button class="nb active" id="n-game" onclick="tab('game')">ጨዋታ</button>
-  <button class="nb" id="n-wallet" onclick="tab('wallet')">ዋሌት</button>
+  <button class="nb" id="n-wallet" onclick="tab('wallet')">Wallet</button>
   <button class="nb" id="n-hist" onclick="tab('hist')">ታሪክ</button>
 </div>
 
@@ -273,7 +304,33 @@ const params=new URLSearchParams(window.location.search);
 const uid=params.get("uid")||(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?String(tg.initDataUnsafe.user.id):"874411134");
 document.getElementById("uid-lbl").textContent=uid;
 const PT={1:{1:3.5},2:{2:10},3:{2:1.5,3:50},4:{2:1,3:10,4:80},5:{3:2,4:15,5:150},6:{3:1.5,4:4,5:60,6:500},7:{3:1,4:3,5:15,6:80,7:1000},8:{4:2,5:10,6:25,7:200,8:2000},9:{4:2,5:5,6:15,7:125,8:800,9:5000},10:{5:2,6:10,7:30,8:100,9:1000,10:10000}};
-let bal=0,bet=10,drawing=false,roundSec=60,queued=null,tickets=[],drawnSoFar=new Set(),roundDone=false; const picks=new Set();
+let bal=0,bet=2,drawing=false,roundSec=60,serverOffsetMs=0,lastTriggeredRound=-1,queued=null,tickets=[],drawnSoFar=new Set(),roundDone=false; const picks=new Set();
+function setBetVal(v){
+  if(drawing)return;
+  const num=Number(v);
+  bet=(!isNaN(num)&&num>=2)?num:2;
+  ui();
+}
+function stepBet(d){
+  if(drawing)return;
+  setBetVal((Number(bet)||2)+Number(d));
+}
+function onBetInput(v){
+  if(drawing)return;
+  const num=Number(v);
+  if(!isNaN(num)&&num>=2){
+    bet=num;
+    const t=PT[picks.size]||{};
+    const mx=Math.max(0,...Object.values(t));
+    document.getElementById("mwin").textContent=(bet*mx).toFixed(2)+" ብር";
+  }
+}
+function syncedNowSec(){return (Date.now()+serverOffsetMs)/1000;}
+function calcGlobalRoundLeft(){
+  const s=syncedNowSec();
+  const rem=60-(Math.floor(s)%60);
+  return rem<=0?60:rem;
+}
 const g=document.getElementById("grid");
 for(let i=1;i<=80;i++){
   const b=document.createElement("button");b.className="t";b.dataset.n=i;b.textContent=i;
@@ -297,12 +354,12 @@ function copyById(elId,btn){
 }
 function ui(){
   document.getElementById("cnt").textContent=picks.size;
-  document.getElementById("bval").textContent=bet;
+  const bi=document.getElementById("bval");if(bi&&document.activeElement!==bi){bi.value=bet;}
   const t=PT[picks.size]||{};
   const mx=Math.max(0,...Object.values(t));
   document.getElementById("mwin").textContent=(bet*mx).toFixed(2)+" ብር";
 }
-function sbet(d){if(!drawing){bet=Math.max(10,bet+d);ui();}}
+
 function tab(k){["game","wallet","hist"].forEach(x=>{document.getElementById("p-"+x).classList.toggle("active",x===k);document.getElementById("n-"+x).classList.toggle("active",x===k);});load();}
 function toggleDepMode(){const m=document.getElementById("dmode").value;document.getElementById("d-code-wrap").style.display=m==="code"?"block":"none";document.getElementById("d-shot-wrap").style.display=m==="shot"?"block":"none";}
 function renderTickets(){
@@ -327,6 +384,8 @@ async function load(){
     const r=await fetch(`/api/state?uid=${encodeURIComponent(uid)}`);
     const d=await r.json();
     bal=d.balance;
+    if(typeof d.server_now==="number"){serverOffsetMs=(d.server_now*1000)-Date.now();}
+    roundSec=calcGlobalRoundLeft();
     if(!drawing){tickets=d.tickets||[];roundDone=false;}
     document.getElementById("bal").textContent=bal.toFixed(2);
     renderTickets();
@@ -339,7 +398,7 @@ function resetDrawStage(){drawnSoFar.clear();roundDone=false;document.querySelec
 async function lockBet(){
   if(drawing)return;
   if(!picks.size)return alert("ቢያንስ 1 ቁጥር ይምረጡ");
-  if(bet<10)return alert("ዝቅተኛ መደብ 10 ብር ነው");
+  if(bet<2)return alert("ዝቅተኛ መደብ 2 ብር ነው");
   if(bal<=0||bet>bal)return showInsuf();
   const r=await fetch("/api/reserve_bet",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({uid,picks:Array.from(picks),bet})});
   const d=await r.json();
@@ -402,11 +461,20 @@ async function appw(id){
   const d=await r.json();alert(d.msg);load();
 }
 setInterval(()=>{
+  const nowSec=syncedNowSec();
+  const curRound=Math.floor(nowSec/60);
+  const rem=60-(Math.floor(nowSec)%60);
+  roundSec=rem<=0?60:rem;
   if(!drawing){
-    if(roundSec<=1){document.getElementById("tm").textContent="00:00";runRoundDraw();}
-    else{roundSec-=1;const m=Math.floor(roundSec/60),s=roundSec%60;document.getElementById("tm").textContent=String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");}
+    const m=Math.floor(roundSec/60),s=roundSec%60;
+    document.getElementById("tm").textContent=String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
+    if(rem===60 && lastTriggeredRound!==curRound){
+      lastTriggeredRound=curRound;
+      document.getElementById("tm").textContent="00:00";
+      runRoundDraw();
+    }
   }
-},1000);
+},250);
 ui();load();
 </script></body></html>"""
 
@@ -448,6 +516,16 @@ def webhook():
         if not u["bonus_claimed"]:
           u["bonus_claimed"] = True
           u["balance"] = round(u["balance"] + 10.0, 2)
+        inviter_id = u.get("referred_by")
+        if inviter_id and inviter_id != uid and not u.get("ref_rewarded"):
+          u["ref_rewarded"] = True
+          inv_u = get_u(inviter_id)
+          inv_u["balance"] = round(inv_u["balance"] + 10.0, 2)
+          inv_u["referrals"] = int(inv_u.get("referrals", 0)) + 1
+          tg(
+              inviter_id,
+              f"🎉 አዲስ ጓደኛ በግብዣ ሊንክዎ ተመዝግቧል!\n🎁 የ10.00 ብር Referral Bonus ተጨምሮልዎታል (ጠቅላላ የተጋበዙ: {inv_u['referrals']} | ባላንስ: {inv_u['balance']:.2f} ብር)።",
+          )
         tg_answer_cb(cb_id, "ምዝገባ ተጠናቋል! 10 ብር ቦነስ ተሰጥቶዎታል።")
         tg(
             uid,
@@ -472,6 +550,19 @@ def webhook():
 
   u = get_u(uid)
   if text.startswith("/start"):
+    parts = text.split(maxsplit=1)
+    if len(parts) == 2 and parts[1].startswith("ref_"):
+      inviter_id = parts[1][4:].strip()
+      if inviter_id and inviter_id != uid and inviter_id in USERS and not u.get("ref_rewarded"):
+        u["referred_by"] = inviter_id
+        u["ref_rewarded"] = True
+        inv_u = get_u(inviter_id)
+        inv_u["balance"] = round(inv_u["balance"] + 10.0, 2)
+        inv_u["referrals"] = int(inv_u.get("referrals", 0)) + 1
+        tg(
+            inviter_id,
+            f"🎉 አዲስ ጓደኛ በግብዣ ሊንክዎ ተቀላቅሏል!\n🎁 የ10.00 ብር Referral Bonus ተጨምሮልዎታል (ጠቅላላ የተጋበዙ: {inv_u['referrals']} | ባላንስ: {inv_u['balance']:.2f} ብር)።",
+        )
     if not u["registered"]:
       tg(
           uid,
@@ -511,17 +602,9 @@ def webhook():
     return jsonify({"ok": True})
 
   if text in ("✉️ ጓደኛ ይጋብዙ", "✉️ Invite Friends", "Invite Friends"):
-    bot_info_user = ""
-    try:
-      me = requests.get(
-          f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=8
-      ).json()
-      if me.get("ok"):
-        bot_info_user = (me.get("result") or {}).get("username") or ""
-    except Exception:
-      pass
+    bot_info_user = get_bot_username()
     ref_link = (
-        f"https://t.me/{bot_info_user}?start={uid}"
+        f"https://t.me/{bot_info_user}?start=ref_{uid}"
         if bot_info_user
         else f"{base_url}/?ref={uid}"
     )
@@ -558,6 +641,11 @@ def api_state():
   uid = str(request.args.get("uid", "874411134")).strip()
   u = get_u(uid)
   adm = bool(ADMIN_CHAT_ID and uid == ADMIN_CHAT_ID)
+  now_ts = time.time()
+  round_sec_left = 60 - int(now_ts % 60)
+  if round_sec_left <= 0:
+    round_sec_left = 60
+  round_idx = int(now_ts // 60)
   return jsonify({
       "balance": u["balance"],
       "registered": u["registered"],
@@ -565,6 +653,9 @@ def api_state():
       "tickets": LIVE_TICKETS[-25:],
       "wds": list(WITHDRAWALS.values()) if adm else u["wds"],
       "is_admin": adm,
+      "server_now": now_ts,
+      "round_idx": round_idx,
+      "round_sec_left": round_sec_left,
   })
 
 
@@ -577,8 +668,8 @@ def api_reserve_bet():
   )
   bet = float(d.get("bet", 0) or 0)
   u = get_u(uid)
-  if not (1 <= len(picks) <= 10) or bet < 10:
-    return jsonify({"ok": False, "msg": "ከ1 እስከ 10 ቁጥር እና ቢያንስ 10 ብር ይምረጡ።"})
+  if not (1 <= len(picks) <= 10) or bet < 2:
+    return jsonify({"ok": False, "msg": "ከ1 እስከ 10 ቁጥር እና ቢያንስ 2 ብር ይምረጡ።"})
   if u["balance"] <= 0 or bet > u["balance"]:
     return jsonify(
         {"ok": False, "insufficient": True, "msg": "በቂ ባላንስ የለም"}
@@ -612,7 +703,7 @@ def api_play():
         2,
     )
   snapshot = list(LIVE_TICKETS[-25:])
-  if not picks or bet < 10:
+  if not picks or bet < 2:
     LIVE_TICKETS.clear()
     return jsonify({
         "ok": True,
