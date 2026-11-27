@@ -72,9 +72,11 @@ def load_persistent_state():
         GAME_HISTORY[:] = data["game_history"]
       if data.get("base_cycle_offset") is not None:
         BASE_CYCLE_OFFSET = int(data["base_cycle_offset"])
-      global HOUSE_TOTAL_STAKE, HOUSE_TOTAL_PAID
+      global HOUSE_TOTAL_STAKE, HOUSE_TOTAL_PAID, HOUSE_TOTAL_DEPOSITS, HOUSE_TOTAL_WITHDRAWALS
       HOUSE_TOTAL_STAKE = float(data.get("house_total_stake", 0.0) or 0.0)
       HOUSE_TOTAL_PAID = float(data.get("house_total_paid", 0.0) or 0.0)
+      HOUSE_TOTAL_DEPOSITS = float(data.get("house_total_deposits", 0.0) or 0.0)
+      HOUSE_TOTAL_WITHDRAWALS = float(data.get("house_total_withdrawals", 0.0) or 0.0)
   except Exception:
     pass
 
@@ -93,6 +95,8 @@ def save_persistent_state():
           "base_cycle_offset": BASE_CYCLE_OFFSET,
           "house_total_stake": HOUSE_TOTAL_STAKE,
           "house_total_paid": HOUSE_TOTAL_PAID,
+          "house_total_deposits": HOUSE_TOTAL_DEPOSITS,
+          "house_total_withdrawals": HOUSE_TOTAL_WITHDRAWALS,
       }, fh, ensure_ascii=False)
     os.replace(tmp_path, STATE_FILE)
   except Exception:
@@ -247,6 +251,37 @@ def _score_drawn_for_entries(drawn_list, entries):
 
 HOUSE_TOTAL_STAKE = 0.0
 HOUSE_TOTAL_PAID = 0.0
+HOUSE_TOTAL_DEPOSITS = 0.0
+HOUSE_TOTAL_WITHDRAWALS = 0.0
+
+
+def get_house_balance():
+  net_round_margin = round(HOUSE_TOTAL_STAKE - HOUSE_TOTAL_PAID, 2)
+  return round(HOUSE_TOTAL_DEPOSITS + net_round_margin - HOUSE_TOTAL_WITHDRAWALS, 2)
+
+
+def record_house_financial_event(event_label, delta_amount, detail_note=""):
+  bal_before = get_house_balance()
+  if event_label == "DEPOSIT":
+    global HOUSE_TOTAL_DEPOSITS
+    HOUSE_TOTAL_DEPOSITS = round(HOUSE_TOTAL_DEPOSITS + float(delta_amount), 2)
+  elif event_label == "WITHDRAW":
+    global HOUSE_TOTAL_WITHDRAWALS
+    HOUSE_TOTAL_WITHDRAWALS = round(HOUSE_TOTAL_WITHDRAWALS + float(delta_amount), 2)
+  bal_after = get_house_balance()
+  net_profit = round(HOUSE_TOTAL_DEPOSITS + (HOUSE_TOTAL_STAKE - HOUSE_TOTAL_PAID) - HOUSE_TOTAL_WITHDRAWALS, 2)
+  save_persistent_state()
+  sign_str = "+" if event_label == "DEPOSIT" else "-"
+  notify_internal(
+      f"📊 House Ledger Update ({event_label})\n"
+      f"Previous Balance: {bal_before:.2f} ETB\n"
+      f"Change: {sign_str}{abs(float(delta_amount)):.2f} ETB\n"
+      f"Remaining House Balance: {bal_after:.2f} ETB\n"
+      f"Total Deposits (CBE+Telebirr): {HOUSE_TOTAL_DEPOSITS:.2f} ETB | Total Withdrawals: {HOUSE_TOTAL_WITHDRAWALS:.2f} ETB\n"
+      f"Daily Net Profit / Position: {net_profit:.2f} ETB\n"
+      f"{detail_note}"
+  )
+  return bal_before, bal_after
 
 
 def get_round_drawn(cycle_num):
@@ -257,42 +292,37 @@ def get_round_drawn(cycle_num):
     rng = random.Random(f"ethio-keno-cycle-{c_key}-{len(entries)}")
     best_drawn = rng.sample(range(1, 81), DRAW_COUNT)
     if entries:
-      # 50% House Profit / 50% Player Return (RTP = 0.50) engine with stake-aware protection:
-      # - Tracks cumulative stake vs payouts so ~50% profit stays with the house.
-      # - Large individual bets (e.g. 2000 vs 500) are not treated equally: avoids handing
-      #   huge/full payouts to big stakes while giving engaging partial matches and controlled
-      #   small engagement wins so players stay excited without hurting the house.
       round_stake = sum(float(e["bet"]) for e in entries)
       max_single_bet = max(float(e["bet"]) for e in entries)
+      live_house_bal = max(0.0, get_house_balance())
       projected_total_stake = HOUSE_TOTAL_STAKE + round_stake
       target_paid_budget = projected_total_stake * 0.50
       remaining_rtp_budget = max(0.0, target_paid_budget - HOUSE_TOTAL_PAID)
       high_stake_round = max_single_bet >= 500.0
       allow_win_round = (
           remaining_rtp_budget >= round_stake * 0.15
-          and (c_key % 4 != 0)
-          and not (high_stake_round and remaining_rtp_budget < max_single_bet * 0.5)
+          and live_house_bal >= max_single_bet
+          and (c_key % 3 != 0)
       )
-      cap_factor = 0.35 if high_stake_round else (0.75 if allow_win_round else 0.45)
-      max_round_payout_cap = min(remaining_rtp_budget, round_stake * cap_factor) if remaining_rtp_budget > 0 else 0.0
+      cap_factor = 0.30 if high_stake_round else (0.75 if allow_win_round else 0.40)
+      max_round_payout_cap = min(remaining_rtp_budget, round_stake * cap_factor, live_house_bal * 0.5) if (remaining_rtp_budget > 0 and live_house_bal > 0) else 0.0
       best_score = None
-      for attempt in range(110):
+      for attempt in range(140):
         cand = rng.sample(range(1, 81), DRAW_COUNT)
         t_bet, t_pay, max_ratio, all_full = _score_drawn_for_entries(cand, entries)
         if all_full and t_pay > 0:
-          penalty = 500000.0 + t_pay
+          penalty = 600000.0 + t_pay
         elif t_pay > max_round_payout_cap:
-          penalty = 25000.0 + (t_pay - max_round_payout_cap) * 40.0
+          penalty = 30000.0 + (t_pay - max_round_payout_cap) * 50.0
         else:
           if allow_win_round and 0.0 < t_pay <= max_round_payout_cap:
-            desired_pay = min(max_round_payout_cap, round_stake * (0.25 if high_stake_round else 0.60))
-            penalty = abs(t_pay - desired_pay) - 1.5
+            desired_pay = min(max_round_payout_cap, round_stake * (0.25 if high_stake_round else 0.55))
+            penalty = abs(t_pay - desired_pay) - 2.0
           else:
-            want_teaser = (c_key % 2 == 1)
-            if want_teaser and 0.0 < max_ratio <= 0.45 and t_pay == 0.0:
-              penalty = -2.0
+            if 0.35 <= max_ratio <= 0.75 and t_pay == 0.0:
+              penalty = -3.0
             else:
-              penalty = t_pay * 20.0 + max_ratio * 2.5
+              penalty = t_pay * 25.0 + abs(max_ratio - 0.5) * 3.0
         if best_score is None or penalty < best_score:
           best_score = penalty
           best_drawn = cand
@@ -607,9 +637,9 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
     </div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:7px">
       <button class="btn" onclick="setBetVal(2)">2 ETB</button>
-      <button class="btn" onclick="setBetVal(4)">4 ETB</button>
-      <button class="btn" onclick="setBetVal(6)">6 ETB</button>
       <button class="btn" onclick="setBetVal(10)">10 ETB</button>
+      <button class="btn" onclick="setBetVal(50)">50 ETB</button>
+      <button class="btn" onclick="setBetVal(100)">100 ETB</button>
     </div>
     <button class="betbtn" id="betbtn" onclick="lockBet()">PLACE BET</button>
   </div>
@@ -648,7 +678,7 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
     <div style="font-size:11px;color:#9ca3af;margin-top:4px">Recharge and enjoy your favorite games</div>
     <div id="dep-step1">
       <select id="dm"><option value="Telebirr">Telebirr</option><option value="CBE">CBE</option></select>
-      <input type="number" id="da" placeholder="Enter amount (min 10 ETB)" min="10" step="any">
+      <input type="number" id="da" placeholder="Enter amount (min 50 ETB)" min="50" step="any">
       <button id="dep-cont-btn" class="act" style="background:#2563eb;margin-top:2px" onclick="showDepositStep2()">Continue</button>
     </div>
     <div id="dep-step2" style="display:none;margin-top:8px">
@@ -690,7 +720,7 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
   </div>
   <div class="box">
     <strong>💸 Withdraw (08:00 AM – 09:00 PM EAT)</strong><br>
-    <input type="number" id="wa" placeholder="Withdraw amount in ETB" value="10">
+    <input type="number" id="wa" placeholder="Withdraw amount (min 200 ETB)" min="200" value="200">
     <select id="wm"><option value="Telebirr">Telebirr</option><option value="CBE">CBE</option></select>
     <input type="text" id="wd" placeholder="Account number & full name (e.g. 09... / 1000... - Name)">
     <button class="act amb" onclick="wdr()">Request Withdraw</button>
@@ -759,7 +789,16 @@ function setBetVal(v){
 }
 function stepBet(d){
   if(drawing)return;
-  setBetVal((Number(bet)||2)+Number(d));
+  const cur=Number(bet)||2;
+  if(Number(d)>0){
+    if(cur<10)setBetVal(cur+2);
+    else if(cur<100)setBetVal(cur+10);
+    else setBetVal(cur+100);
+  }else{
+    if(cur>100)setBetVal(Math.max(100,cur-100));
+    else if(cur>10)setBetVal(Math.max(10,cur-10));
+    else setBetVal(Math.max(2,cur-2));
+  }
 }
 function onBetInput(v){
   if(drawing)return;
@@ -828,7 +867,7 @@ function ui(){
 function tab(k){["game","wallet","hist","rules"].forEach(x=>{document.getElementById("p-"+x).classList.toggle("active",x===k);document.getElementById("n-"+x).classList.toggle("active",x===k);});load();}
 function showDepositStep2(){
   const amt=Number(document.getElementById("da").value||0);
-  if(!amt||amt<10)return alert("Minimum deposit is 10 ETB.");
+  if(!amt||amt<50)return alert("Minimum deposit is 50 ETB.");
   const m=document.getElementById("dm").value;
   document.getElementById("dep-sum-amt").textContent=`${amt} ETB`;
   document.getElementById("dep-sum-meta").textContent=`• ${m} • just now`;
@@ -882,12 +921,13 @@ async function load(){
     const cInfo=calcGlobalCycleInfo();
     roundSec=cInfo.betSecLeft;
     if(!drawing){
-      if(cInfo.phase==="drawing"){
+      if(cInfo.phase==="drawing" && Number(d.cycle_num)===cInfo.cycleNum){
         tickets=d.tickets||[];
         runRoundDraw(cInfo.cycleNum, true);
       }else{
-        tickets=d.tickets||[];
+        drawnSoFar.clear();
         roundDone=false;
+        tickets=(Number(d.cycle_num)===cInfo.cycleNum && cInfo.phase==="betting")?(d.tickets||[]):[];
         document.getElementById("bal").textContent=bal.toFixed(2);
       }
     }
@@ -899,7 +939,7 @@ async function load(){
   }catch(e){}
 }
 function clearSelectionsAndBoard(){picks.clear();document.querySelectorAll(".t").forEach(x=>x.classList.remove("sel"));ui();}
-function resetDrawStage(){drawnSoFar.clear();roundDone=false;document.getElementById("strip").innerHTML="";document.getElementById("dprog").textContent="0 / 20";document.getElementById("ball").textContent="--";const bn=document.getElementById("out-banner");bn.className="banner";bn.textContent="";}
+function resetDrawStage(){drawnSoFar.clear();roundDone=false;tickets=[];document.getElementById("strip").innerHTML="";document.getElementById("dprog").textContent="0 / 20";document.getElementById("ball").textContent="--";const bn=document.getElementById("out-banner");bn.className="banner";bn.textContent="";renderTickets();}
 async function lockBet(){
   if(drawing)return;
   if(!picks.size)return alert("Please select at least 1 number.");
@@ -999,7 +1039,10 @@ async function runRoundDraw(targetCycle, allowResync){
       bn.className="banner tryb";
       bn.textContent=`Please try again — ${mt} matches`;
     }
-    document.getElementById("gmsg").innerHTML=`<b>Matches (${mt}):</b> ${hList.join(", ")||"None"} | <b>Win:</b> ${pay.toFixed(2)} ETB`;
+    const suspMsg = (pay <= 0 && mt > 0)
+      ? ` <span style="color:#fbbf24">(So close! ${mt}/${activeBet.picks.length} matched!)</span>`
+      : (pay <= 0 ? ` <span style="color:#9ca3af">(Next round could hit!)</span>` : "");
+    document.getElementById("gmsg").innerHTML=`<b>Matches (${mt}):</b> ${hList.join(", ")||"None"} | <b>Win:</b> ${pay.toFixed(2)} ETB${suspMsg}`;
     await new Promise(res=>setTimeout(res,4000));
   }else{
     await new Promise(res=>setTimeout(res,2500));
@@ -1180,7 +1223,7 @@ def webhook():
         u["invalid_shots"] = 0
         u["registered"] = True
         u["balance"] = round(u["balance"] + amt, 2)
-        save_persistent_state()
+        record_house_financial_event("DEPOSIT", amt, f"Customer: {target_uid} | Method: {m} | Ref: {tx}")
         tg_answer_cb(cb_id, f"✅ Deposit {did} approved ({amt:.2f} ETB).")
         tg(
             target_uid,
@@ -1728,6 +1771,125 @@ def verify_external_receipt_if_configured(method, tx_code, raw_sms, expected_amt
   return "verified", ""
 
 
+def fetch_receipt_link_details(raw_sms):
+  m_url = re.search(r"https?://\S+", raw_sms or "", re.I)
+  if not m_url:
+    return None, ""
+  receipt_url = m_url.group(0).strip().rstrip(".,;)")
+  try:
+    resp = requests.get(receipt_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+    if not resp.ok or not resp.text:
+      return None, f"Receipt link could not be fetched (status {resp.status_code})."
+    plain = re.sub(r"<[^>]+>", " ", resp.text)
+    plain = re.sub(r"\s+", " ", plain).strip()
+    return {"url": receipt_url, "text": plain}, ""
+  except Exception as e:
+    return None, f"Could not open receipt link online ({str(e)[:80]})."
+
+
+
+
+
+def verify_sms_strict(method, raw_sms, expected_amt):
+  txt = (raw_sms or "").strip()
+  up = txt.upper()
+  tb_num, tb_owner = split_account_and_name(TELEBIRR_ACCOUNT, TELEBIRR_NAME)
+  cbe_num, cbe_owner = split_account_and_name(CBE_ACCOUNT, CBE_NAME)
+
+  target_acc = (tb_num if method == "Telebirr" else cbe_num).strip()
+  target_owner = (tb_owner if method == "Telebirr" else cbe_owner).strip().lower()
+
+  # Reject obvious spoof/scam phrases or fake receipt domains
+  scam_markers = ["FAKE RECEIPT", "PHISHING", "TEST PAYMENT", "SIMULATED", "SCRAMBLER"]
+  if any(s in up for s in scam_markers):
+    return "rejected", "Suspicious or spoofed payment text detected."
+
+  # 1. Must include payment confirmation context or official receipt URL
+  has_payment_context = any(k in up for k in [
+      "TELEBIRR", "ETHIO TELECOM", "TRANSACTION NUMBER", "TRANSACTION ID",
+      "COMMERCIAL BANK OF ETHIOPIA", "CBE", "DEBITED", "TRANSFERRED",
+      "PAID TO", "RECEIVED", "CREDITED", "ETB", "BIRR", "ACCT", "ACCOUNT",
+      "APPS.CBE.COM.ET", "RECEIPT", "HTTPS://", "HTTP://"
+  ])
+  if not has_payment_context:
+    return "rejected", "Official confirmation SMS or receipt link is missing."
+
+  # 2. Method alignment
+  is_cbe_text = ("CBE" in up or "COMMERCIAL BANK OF ETHIOPIA" in up or "APPS.CBE.COM.ET" in up or re.search(r"\bFT[A-Z0-9]{6,18}\b", up) is not None)
+  is_tb_text = ("TELEBIRR" in up or "ETHIO TELECOM" in up)
+  if method == "CBE" and is_tb_text and not is_cbe_text:
+    return "rejected", "CBE is selected, but the message is from Telebirr."
+  if method == "Telebirr" and is_cbe_text and not is_tb_text:
+    return "rejected", "Telebirr is selected, but the message is from CBE."
+
+  # If a URL is provided, validate domain and inspect receipt content
+  url_match = re.search(r"https?://\S+", txt, re.I)
+  fetched = None
+  fetch_err = ""
+  if url_match:
+    raw_url = url_match.group(0).strip().rstrip(".,;)")
+    low_url = raw_url.lower()
+    if method == "CBE" and "cbe.com.et" not in low_url:
+      return "rejected", "Untrusted or non-CBE receipt link provided."
+    if method == "Telebirr" and ("ethiotelecom" not in low_url and "telebirr" not in low_url):
+      return "rejected", "Untrusted or non-Telebirr receipt link provided."
+    fetched, fetch_err = fetch_receipt_link_details(txt)
+    if fetched is None:
+      return "needs_review", f"Disputed/unreadable receipt link; sent to admin ({fetch_err})."
+
+  combined_text = txt
+  if fetched and fetched.get("text"):
+    combined_text = f"{txt}\n{fetched['text']}"
+  comb_up = combined_text.upper()
+
+  # 3. Receiver account or holder name verification
+  acc_digits = re.sub(r"\D", "", target_acc)
+  acc_matched = False
+  url_suffix_matches = re.findall(r"[?&/]([0-9]{6,13})\b", txt)
+  for suf in url_suffix_matches:
+    if acc_digits.endswith(suf) or suf.endswith(acc_digits[-8:]):
+      acc_matched = True
+      break
+
+  body_without_urls = re.sub(r"https?://\S+", " ", combined_text)
+  body_digits = re.sub(r"\D", "", body_without_urls)
+  if not acc_matched and acc_digits and len(acc_digits) >= 6 and acc_digits in body_digits:
+    acc_matched = True
+  if not acc_matched and len(acc_digits) >= 8:
+    if acc_digits[-4:] in body_digits and ("*" in body_without_urls or "X" in body_without_urls.upper()):
+      acc_matched = True
+
+  owner_matched = False
+  if target_owner and len(target_owner) >= 4:
+    name_parts = [p for p in re.split(r"\s+", target_owner) if len(p) >= 3]
+    if name_parts and all(part in combined_text.lower() for part in name_parts):
+      owner_matched = True
+
+  if not (acc_matched or owner_matched):
+    return "rejected", f"Receiver account or holder name does not match {target_acc} ({target_owner.title()})."
+
+  # Reject outgoing-only transfers where funds went to a different account
+  if any(k in up for k in ["PAID TO ", "TRANSFERRED TO ", "DEBITED WITH ", "SENT TO "]) and not acc_matched and not owner_matched:
+    return "rejected", "Outgoing payment does not match our receiving account."
+
+  # 4. Amount verification
+  amt_matches = re.findall(r"(?:ETB|BIRR)\s*([0-9,]+(?:\.[0-9]{1,2})?)|([0-9,]+(?:\.[0-9]{1,2})?)\s*(?:ETB|BIRR)", comb_up)
+  found_amounts = []
+  for g1, g2 in amt_matches:
+    raw_num = (g1 or g2 or "").replace(",", "").strip()
+    if raw_num:
+      try:
+        found_amounts.append(float(raw_num))
+      except ValueError:
+        pass
+  if not found_amounts:
+    return "needs_review", f"Disputed/unclear amount in text; sent to admin ({float(expected_amt):.2f} ETB)."
+  if not any(abs(x - float(expected_amt)) < 0.01 for x in found_amounts):
+    return "rejected", f"Amount in SMS/receipt does not match requested {float(expected_amt):.2f} ETB."
+
+  return "verified", ""
+
+
 @app.route("/api/deposit", methods=["POST"])
 def api_deposit():
   d = request.get_json(force=True)
@@ -1738,19 +1900,19 @@ def api_deposit():
   amt = float(d.get("amount", 0) or 0)
   u = get_u(uid)
 
-  if amt < 10:
-    return jsonify({"ok": False, "msg": "❌ Minimum deposit is 10 ETB."})
+  if amt < 50:
+    return jsonify({"ok": False, "msg": "❌ Minimum deposit is 50 ETB."})
 
   if not tx:
-    return jsonify({"ok": False, "msg": "❌ Valid Transaction ID not found in SMS. Please paste your full payment confirmation SMS or receipt link."})
+    return jsonify({"ok": False, "msg": "❌ Valid Transaction ID not found. Please paste your full payment confirmation SMS or receipt link."})
 
-  # Normalize receipt URL / reference key so same receipt cannot be reused
   url_match = re.search(r"https?://\S+", raw_sms, re.I)
   norm_url = url_match.group(0).strip().upper() if url_match else ""
   tx_key = f"TX:{tx}"
   url_key = f"URL:{norm_url}" if norm_url else ""
 
-  if tx_key in {str(x).upper() for x in USED_TX} or tx in {str(x).upper() for x in USED_TX} or (url_key and url_key in {str(x).upper() for x in USED_TX}):
+  used_upper = {str(x).upper() for x in USED_TX}
+  if tx_key in used_upper or tx in used_upper or (url_key and url_key in used_upper):
     return jsonify({"ok": False, "msg": "⚠️ Duplicate Transaction ID or Receipt! This payment reference has already been used."})
 
   st = check_tx_status(m, tx)
@@ -1759,7 +1921,7 @@ def api_deposit():
   if st != "ok":
     return jsonify({"ok": False, "msg": "❌ Invalid Transaction ID format for the selected payment method."})
 
-  sms_status, reason = verify_sms_details(m, raw_sms, amt)
+  sms_status, reason = verify_sms_strict(m, raw_sms, amt)
   if sms_status == "rejected":
     u["invalid_shots"] = int(u.get("invalid_shots", 0)) + 1
     save_persistent_state()
@@ -1771,6 +1933,8 @@ def api_deposit():
     save_persistent_state()
     return jsonify({"ok": False, "msg": f"❌ Verification failed: {ext_reason}"})
 
+  # 24/7 autonomous verification & credit for verified deposits of any amount (50, 100, 1000+ ETB);
+  # only genuinely ambiguous/disputed/unreadable cases route to admin queue.
   if sms_status == "needs_review" or ext_status == "needs_review":
     review_note = reason if sms_status == "needs_review" else ext_reason
     did = "DEP-" + uuid.uuid4().hex[:6].upper()
@@ -1782,6 +1946,8 @@ def api_deposit():
         "amount": amt,
         "sms_text": raw_sms,
         "status": "Pending",
+        "created_ts": int(time.time()),
+        "check_note": review_note,
     }
     save_persistent_state()
     dep_kb = {
@@ -1792,14 +1958,14 @@ def api_deposit():
     }
     notify_internal_kb(
         (
-            f"⚠️ Deposit Needs Admin Check\n"
+            f"🔎 Deposit Check Queue\n"
             f"ID: {did}\n"
             f"Customer ID: {uid}\n"
             f"Method: {m}\n"
             f"Ref: {tx}\n"
             f"Amount: {amt:.2f} ETB\n"
             f"Note: {review_note}\n"
-            f"Details: {raw_sms[:300]}"
+            f"Details: {raw_sms[:350]}"
         ),
         dep_kb,
     )
@@ -1808,7 +1974,7 @@ def api_deposit():
         "pending": True,
         "balance": u["balance"],
         "msg": (
-            f"⏳ Deposit ({did}) for {amt:.2f} ETB via {m} ({tx}) needs extra check and was sent to Admin (@{INTERNAL_DEST_HANDLE})."
+            f"⏳ Deposit ({did}) for {amt:.2f} ETB ({m} / {tx}) queued for extra verification."
         ),
     })
 
@@ -1819,15 +1985,12 @@ def api_deposit():
   u["invalid_shots"] = 0
   u["registered"] = True
   u["balance"] = round(u["balance"] + amt, 2)
-  save_persistent_state()
-  notify_internal(
-      f"✅ Auto-Credited Deposit\nCustomer ID: {uid}\nMethod: {m}\nRef: {tx}\nAmount: {amt:.2f} ETB"
-  )
+  record_house_financial_event("DEPOSIT", amt, f"Customer: {uid} | Method: {m} | Ref: {tx} (24/7 Auto)")
   return jsonify({
       "ok": True,
       "balance": u["balance"],
       "msg": (
-          f"✅ Verified & Completed! {amt:.2f} ETB via {m} ({tx}) has been added to your balance."
+          f"✅ Verified & Credited! {amt:.2f} ETB via {m} ({tx}) has been added to your balance."
       ),
   })
 
@@ -1849,14 +2012,15 @@ def api_withdraw():
       str(d.get("dest", "")).strip(),
   )
   u = get_u(uid)
-  if amt <= 0:
-    return jsonify({"ok": False, "msg": "Please enter a valid withdrawal amount."})
+  if amt < 200:
+    return jsonify({"ok": False, "msg": "❌ Minimum withdrawal is 200 ETB."})
   if amt > u["balance"]:
     return jsonify({"ok": False, "msg": "Insufficient balance."})
   if not dest:
     return jsonify({"ok": False, "msg": "Please enter your account number and full name."})
   u["balance"] = round(u["balance"] - amt, 2)
   wid = "WD-" + uuid.uuid4().hex[:6].upper()
+  bal_before_wd, bal_after_wd = record_house_financial_event("WITHDRAW", amt, f"ID: {wid} | Customer: {uid} | Bank: {m} -> {dest}")
   obj = {
       "id": wid,
       "uid": uid,
@@ -1874,7 +2038,8 @@ def api_withdraw():
       f"Customer ID: {uid}\n"
       f"Bank: {m}\n"
       f"Amount: {amt:.2f} ETB\n"
-      f"Customer Account: {dest}"
+      f"Customer Account: {dest}\n"
+      f"House Balance Before: {bal_before_wd:.2f} ETB -> After Deduction: {bal_after_wd:.2f} ETB"
   )
   wd_kb = {
       "inline_keyboard": [[{
