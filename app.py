@@ -48,10 +48,12 @@ USERS, USED_TX, WITHDRAWALS = {}, set(), {}
 CLAIMED_BONUS_USERS = set()
 REFERRED_USERS = {}
 LIVE_TICKETS = []
+GAME_HISTORY = []  # list of dicts: {"round": int, "cycle": int, "drawn": [20 ints], "ts": int}
+BASE_CYCLE_OFFSET = None
 
 
 def load_persistent_state():
-  global USERS, USED_TX, WITHDRAWALS, CLAIMED_BONUS_USERS, REFERRED_USERS
+  global USERS, USED_TX, WITHDRAWALS, CLAIMED_BONUS_USERS, REFERRED_USERS, GAME_HISTORY, BASE_CYCLE_OFFSET
   try:
     if os.path.exists(STATE_FILE):
       with open(STATE_FILE, "r", encoding="utf-8") as fh:
@@ -66,6 +68,10 @@ def load_persistent_state():
         CLAIMED_BONUS_USERS.update(str(x) for x in data["claimed_bonus_users"])
       if isinstance(data.get("referred_users"), dict):
         REFERRED_USERS.update(data["referred_users"])
+      if isinstance(data.get("game_history"), list):
+        GAME_HISTORY[:] = data["game_history"]
+      if data.get("base_cycle_offset") is not None:
+        BASE_CYCLE_OFFSET = int(data["base_cycle_offset"])
       global HOUSE_TOTAL_STAKE, HOUSE_TOTAL_PAID
       HOUSE_TOTAL_STAKE = float(data.get("house_total_stake", 0.0) or 0.0)
       HOUSE_TOTAL_PAID = float(data.get("house_total_paid", 0.0) or 0.0)
@@ -83,12 +89,38 @@ def save_persistent_state():
           "withdrawals": WITHDRAWALS,
           "claimed_bonus_users": list(CLAIMED_BONUS_USERS),
           "referred_users": REFERRED_USERS,
+          "game_history": GAME_HISTORY[-200:],
+          "base_cycle_offset": BASE_CYCLE_OFFSET,
           "house_total_stake": HOUSE_TOTAL_STAKE,
           "house_total_paid": HOUSE_TOTAL_PAID,
       }, fh, ensure_ascii=False)
     os.replace(tmp_path, STATE_FILE)
   except Exception:
     pass
+
+
+def cycle_to_round_num(cycle_num):
+  global BASE_CYCLE_OFFSET
+  c_val = int(cycle_num)
+  if BASE_CYCLE_OFFSET is None:
+    BASE_CYCLE_OFFSET = c_val - 1
+    save_persistent_state()
+  return max(1, c_val - int(BASE_CYCLE_OFFSET))
+
+
+def record_game_history(cycle_num, drawn_list):
+  c_key = int(cycle_num)
+  r_num = cycle_to_round_num(c_key)
+  if not any(int(item.get("cycle", -1)) == c_key for item in GAME_HISTORY):
+    GAME_HISTORY.append({
+        "round": r_num,
+        "cycle": c_key,
+        "drawn": list(drawn_list[:20]),
+        "ts": int(time.time()),
+    })
+    if len(GAME_HISTORY) > 200:
+      GAME_HISTORY[:] = GAME_HISTORY[-200:]
+    save_persistent_state()
 
 
 load_persistent_state()
@@ -283,11 +315,14 @@ def settle_cycle_if_needed(cycle_num):
       if payout > 0:
         u["balance"] = round(u["balance"] + payout, 2)
       u["bets"].append({
+          "round": cycle_to_round_num(c_key),
           "cycle": c_key,
+          "picks": picks,
           "bet": bet_amt,
           "matches": len(hits),
           "payout": payout,
       })
+    record_game_history(c_key, drawn)
     save_persistent_state()
   return drawn, entries
 
@@ -572,6 +607,11 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
   </div>
 </div>
 
+<div id="p-hist" class="panel">
+  <div class="box"><strong>📜 Bet History</strong><div id="hlist">No bet history yet.</div></div>
+  <div class="box"><strong>🎲 Game History (24/7 Rounds — 20 Numbers)</strong><div id="ghlist">No completed rounds yet.</div></div>
+</div>
+
 <div id="p-wallet" class="panel">
   <div class="box">
     <div style="display:flex;justify-content:space-between;align-items:center">
@@ -632,8 +672,6 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
   <div class="box"><strong>⏳ Withdraw Status</strong><div id="wlist">No withdraw requests yet.</div></div>
 </div>
 
-<div id="p-hist" class="panel"><div class="box"><strong>📜 Bet History</strong><div id="hlist">No bet history yet.</div></div></div>
-
 <div id="p-rules" class="panel">
   <div class="box">
     <strong>📜 Game Rules & Payout Table</strong>
@@ -674,8 +712,8 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
 
 <div class="nav" style="grid-template-columns:repeat(4,1fr)">
   <button class="nb active" id="n-game" onclick="tab('game')">Game</button>
-  <button class="nb" id="n-wallet" onclick="tab('wallet')">Wallet</button>
   <button class="nb" id="n-hist" onclick="tab('hist')">History</button>
+  <button class="nb" id="n-wallet" onclick="tab('wallet')">Wallet</button>
   <button class="nb" id="n-rules" onclick="tab('rules')">Rules</button>
 </div>
 
@@ -805,9 +843,9 @@ async function load(){
     const cInfo=calcGlobalCycleInfo();
     roundSec=cInfo.betSecLeft;
     if(!drawing){
-      if(cInfo.phase==="drawing" && lastDrawnCycle!==cInfo.cycleNum){
+      if(cInfo.phase==="drawing"){
         tickets=d.tickets||[];
-        runRoundDraw(cInfo.cycleNum);
+        runRoundDraw(cInfo.cycleNum, true);
       }else{
         tickets=d.tickets||[];
         roundDone=false;
@@ -815,7 +853,9 @@ async function load(){
       }
     }
     renderTickets();
-    document.getElementById("hlist").innerHTML=d.bets.length?d.bets.slice().reverse().map(x=>`<div>Bet: ${x.bet} ETB | Matches: ${x.matches} | Win: ${x.payout} ETB</div>`).join(""):"No bet history yet.";
+    document.getElementById("hlist").innerHTML=(d.bets&&d.bets.length)?d.bets.slice().reverse().map(x=>`<div style="padding:5px 0;border-bottom:1px solid #232934">Round #${x.round||x.cycle||"-"} | Bet: <b>${x.bet} ETB</b> | Matches: <b>${x.matches}</b> | Win: <b style="color:#4ade80">${x.payout} ETB</b></div>`).join(""):"No bet history yet.";
+    const ghArr=d.game_history||[];
+    document.getElementById("ghlist").innerHTML=ghArr.length?ghArr.map(g=>`<div style="padding:7px 0;border-bottom:1px solid #232934"><div style="color:#4ade80;font-weight:800;margin-bottom:4px">Round #${g.round} <span style="color:#9ca3af;font-weight:400">(${(g.drawn||[]).length} numbers)</span></div><div style="display:flex;flex-wrap:wrap;gap:4px">${(g.drawn||[]).map(n=>`<span class="tnum">${n}</span>`).join("")}</div></div>`).join(""):"No completed rounds yet.";
     document.getElementById("wlist").innerHTML=d.wds.length?d.wds.slice().reverse().map(w=>`<div style="padding:6px 0;border-bottom:1px solid #2b303b">${w.id} | ${w.method} (${w.dest}) | ${w.amount} ETB | <b>${w.status}</b>${w.status==="Pending"?`<br><button class="appb" onclick="appw('${w.id}')">Approve (Complete)</button>`:""}</div>`).join(""):"No withdraw requests yet.";
   }catch(e){}
 }
@@ -849,13 +889,16 @@ function appendDrawnChipInstant(n, watchedSet, updateMainBall){
   document.getElementById("strip").appendChild(ch);
 }
 
-async function runRoundDraw(targetCycle){
+async function runRoundDraw(targetCycle, allowResync){
   if(drawing)return;
   const cNum=(typeof targetCycle==="number")?targetCycle:calcGlobalCycleInfo().cycleNum;
-  if(lastDrawnCycle===cNum)return;
+  if(lastDrawnCycle===cNum && !allowResync)return;
+  const isResync=(lastDrawnCycle===cNum && Boolean(allowResync));
   lastDrawnCycle=cNum;
   drawing=true;
-  resetDrawStage();
+  if(!isResync){
+    resetDrawStage();
+  }
   let activeBet=(queued && queued.cycleNum===cNum)?queued:null;
   if(activeBet)queued=null;
 
@@ -871,8 +914,8 @@ async function runRoundDraw(targetCycle){
   const drawnArr=d.drawn||[];
   const watched=new Set(activeBet?activeBet.picks:[]);
 
-  // Any numbers already drawn by the server up to this exact moment appear immediately
-  // seated in place without fast-forwarding or racing.
+  // Live catch-up: numbers already drawn by the server up to now appear seated immediately;
+  // numbers not yet drawn continue live one by one on the real server clock.
   const initInfo=calcGlobalCycleInfo();
   const alreadyCount=(initInfo.cycleNum===cNum && initInfo.phase==="drawing")
     ? Math.min(drawnArr.length, Math.max(0, Math.floor(initInfo.drawElapsedSec / stepSec) + 1))
@@ -885,7 +928,6 @@ async function runRoundDraw(targetCycle){
     renderTickets();
   }
 
-  // Subsequent numbers appear one by one in sync with the server draw timeline
   for(let i=alreadyCount;i<drawnArr.length;i++){
     const cNow=calcGlobalCycleInfo();
     if(cNow.phase==="betting" && cNow.cycleNum!==cNum)break;
@@ -894,7 +936,7 @@ async function runRoundDraw(targetCycle){
       const tickNow=calcGlobalCycleInfo();
       if(tickNow.phase==="betting" && tickNow.cycleNum!==cNum)break;
       if(tickNow.cycleNum!==cNum || tickNow.drawElapsedSec >= targetElapsed - 0.05)break;
-      const waitMs=Math.min(250, Math.max(50, (targetElapsed - tickNow.drawElapsedSec)*1000));
+      const waitMs=Math.min(200, Math.max(40, (targetElapsed - tickNow.drawElapsedSec)*1000));
       await new Promise(res=>setTimeout(res,waitMs));
     }
     const afterWait=calcGlobalCycleInfo();
@@ -1041,7 +1083,11 @@ def webhook():
     uid = str(from_user.get("id", "")).strip()
     if data == "register_bonus" and uid:
       u = get_u(uid)
-      already_claimed = bool(u.get("registered") or u.get("bonus_claimed") or uid in CLAIMED_BONUS_USERS)
+      already_claimed = bool(
+          u.get("registered")
+          or u.get("bonus_claimed")
+          or uid in CLAIMED_BONUS_USERS
+      )
       if not already_claimed:
         u["registered"] = True
         u["bonus_claimed"] = True
@@ -1051,7 +1097,6 @@ def webhook():
         if (
             inviter_id
             and inviter_id != uid
-            and inviter_id in USERS
             and not u.get("ref_rewarded")
         ):
           u["ref_rewarded"] = True
@@ -1060,24 +1105,26 @@ def webhook():
           inv_u["referrals"] = int(inv_u.get("referrals", 0)) + 1
           tg(
               inviter_id,
-              f"🎉 Your friend joined via your referral link and verified their registration!\n🎁 You received a 10.00 ETB referral bonus (one-time only). Total referrals: {inv_u['referrals']} | Balance: {inv_u['balance']:.2f} ETB",
+              f"🎉 Your friend registered for the first time via your referral link!\n🎁 You received a one-time 10.00 ETB referral bonus. Total referrals: {inv_u['referrals']} | Balance: {inv_u['balance']:.2f} ETB",
           )
         save_persistent_state()
         tg_answer_cb(cb_id, "Registration complete! 10.00 ETB one-time bonus credited.")
         tg(
             uid,
-            f"✅ Registration verified and completed!\n🎁 You received a 10.00 ETB welcome bonus (one-time only).\n💰 Your Balance: {u['balance']:.2f} ETB",
+            f"✅ Registration verified and completed!\n🎁 You received a one-time 10.00 ETB welcome bonus.\n💰 Your Balance: {u['balance']:.2f} ETB",
             main_reply_kb(uid, base_url),
         )
       else:
         u["registered"] = True
         u["bonus_claimed"] = True
         CLAIMED_BONUS_USERS.add(uid)
+        u["referred_by"] = ""
+        REFERRED_USERS.pop(uid, None)
         save_persistent_state()
-        tg_answer_cb(cb_id, "Already registered! Welcome bonus is one-time only.")
+        tg_answer_cb(cb_id, "Already registered! No bonus available.")
         tg(
             uid,
-            f"ℹ️ You have already registered and claimed your welcome bonus. Bonus can only be claimed once.\n💰 Your Balance: {u['balance']:.2f} ETB",
+            f"ℹ️ You are already registered. No welcome or referral bonus is granted for already-registered accounts.\n💰 Your Balance: {u['balance']:.2f} ETB",
             main_reply_kb(uid, base_url),
         )
     elif data.startswith("approve_wd:"):
@@ -1234,20 +1281,29 @@ def webhook():
   u = get_u(uid)
   if text.startswith("/start"):
     parts = text.split(maxsplit=1)
-    already_claimed = bool(u.get("registered") or u.get("bonus_claimed") or uid in CLAIMED_BONUS_USERS)
-    if len(parts) == 2 and parts[1].startswith("ref_"):
+    already_registered = bool(
+        u.get("registered")
+        or u.get("bonus_claimed")
+        or uid in CLAIMED_BONUS_USERS
+    )
+    if already_registered:
+      u["registered"] = True
+      u["bonus_claimed"] = True
+      CLAIMED_BONUS_USERS.add(uid)
+      save_persistent_state()
+    elif len(parts) == 2 and parts[1].startswith("ref_"):
       inviter_id = parts[1][4:].strip()
       if (
-          not already_claimed
-          and inviter_id
+          inviter_id
           and inviter_id != uid
           and not u.get("referred_by")
           and uid not in REFERRED_USERS
+          and not u.get("ref_rewarded")
       ):
         u["referred_by"] = inviter_id
         REFERRED_USERS[uid] = inviter_id
         save_persistent_state()
-    if not already_claimed:
+    if not already_registered:
       tg(
           uid,
           "Welcome to ETHIO FAST KENO!\n\n"
@@ -1382,10 +1438,16 @@ def api_state():
   ]
   my_entry = next((e for e in reversed(entries) if e["uid"] == uid), None)
 
+  prev_cycle = c_num - 1
+  if prev_cycle >= 0 and prev_cycle not in SETTLED_ROUNDS:
+    settle_cycle_if_needed(prev_cycle)
+
   return jsonify({
       "balance": u["balance"],
       "registered": u["registered"],
-      "bets": u["bets"][-20:],
+      "round_num": cycle_to_round_num(c_num),
+      "bets": u["bets"][-50:],
+      "game_history": list(reversed(GAME_HISTORY[-50:])),
       "tickets": public_tickets,
       "my_ticket": my_entry,
       "drawn": drawn[:shown_cnt],
