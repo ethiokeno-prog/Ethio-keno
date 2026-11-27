@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import base64
 import hashlib
+import json
 import time
 import os
 import random
@@ -20,16 +21,77 @@ ADMIN_CHAT_ID = (os.environ.get("ADMIN_CHAT_ID") or "874411134").strip()
 PAYOUT_CHAT_ID = (os.environ.get("PAYOUT_CHAT_ID") or "").strip()
 SUPPORT_HANDLE = (os.environ.get("SUPPORT_HANDLE") or "").strip().lstrip("@")
 TELEBIRR_ACCOUNT = (
-    os.environ.get("TELEBIRR_ACCOUNT") or "0944123180 - Enyachew Amerga"
+    os.environ.get("TELEBIRR_ACCOUNT") or "0944123180"
+).strip()
+TELEBIRR_NAME = (
+    os.environ.get("TELEBIRR_NAME") or "Enyachew Amerga"
 ).strip()
 CBE_ACCOUNT = (
-    os.environ.get("CBE_ACCOUNT") or "1000682528641 - Enyachew Amerga"
+    os.environ.get("CBE_ACCOUNT") or "1000682528641"
 ).strip()
+CBE_NAME = (
+    os.environ.get("CBE_NAME") or "Enyachew Amerga"
+).strip()
+
+
+def split_account_and_name(raw_val, default_name):
+  val = (raw_val or "").strip()
+  if " - " in val:
+    num_part, name_part = val.split(" - ", 1)
+    return num_part.strip(), (name_part.strip() or default_name)
+  return val, default_name
 WEBAPP_URL = (os.environ.get("WEBAPP_URL") or "https://ethio-keno-exlm.onrender.com").strip().rstrip("/")
 
 EAT = timezone(timedelta(hours=3))
+STATE_FILE = os.environ.get("STATE_FILE") or "/tmp/ethio_keno_state.json"
 USERS, USED_TX, WITHDRAWALS = {}, set(), {}
+CLAIMED_BONUS_USERS = set()
+REFERRED_USERS = {}
 LIVE_TICKETS = []
+
+
+def load_persistent_state():
+  global USERS, USED_TX, WITHDRAWALS, CLAIMED_BONUS_USERS, REFERRED_USERS
+  try:
+    if os.path.exists(STATE_FILE):
+      with open(STATE_FILE, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+      if isinstance(data.get("users"), dict):
+        USERS.update(data["users"])
+      if isinstance(data.get("used_tx"), list):
+        USED_TX.update(str(x) for x in data["used_tx"])
+      if isinstance(data.get("withdrawals"), dict):
+        WITHDRAWALS.update(data["withdrawals"])
+      if isinstance(data.get("claimed_bonus_users"), list):
+        CLAIMED_BONUS_USERS.update(str(x) for x in data["claimed_bonus_users"])
+      if isinstance(data.get("referred_users"), dict):
+        REFERRED_USERS.update(data["referred_users"])
+      global HOUSE_TOTAL_STAKE, HOUSE_TOTAL_PAID
+      HOUSE_TOTAL_STAKE = float(data.get("house_total_stake", 0.0) or 0.0)
+      HOUSE_TOTAL_PAID = float(data.get("house_total_paid", 0.0) or 0.0)
+  except Exception:
+    pass
+
+
+def save_persistent_state():
+  try:
+    tmp_path = STATE_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+      json.dump({
+          "users": USERS,
+          "used_tx": list(USED_TX),
+          "withdrawals": WITHDRAWALS,
+          "claimed_bonus_users": list(CLAIMED_BONUS_USERS),
+          "referred_users": REFERRED_USERS,
+          "house_total_stake": HOUSE_TOTAL_STAKE,
+          "house_total_paid": HOUSE_TOTAL_PAID,
+      }, fh, ensure_ascii=False)
+    os.replace(tmp_path, STATE_FILE)
+  except Exception:
+    pass
+
+
+load_persistent_state()
 
 PAYTABLE = {
     1: {1: 3.5},
@@ -130,11 +192,74 @@ def current_cycle_state(now_ts=None):
   }
 
 
+def _score_drawn_for_entries(drawn_list, entries):
+  d_set = set(drawn_list)
+  total_bet = 0.0
+  total_payout = 0.0
+  max_hit_ratio = 0.0
+  all_full_hit = bool(entries)
+  for e in entries:
+    picks = e["picks"]
+    b_amt = float(e["bet"])
+    total_bet += b_amt
+    h_cnt = sum(1 for x in picks if x in d_set)
+    ratio = (h_cnt / len(picks)) if picks else 0.0
+    if ratio > max_hit_ratio:
+      max_hit_ratio = ratio
+    if h_cnt < len(picks):
+      all_full_hit = False
+    mult = PAYTABLE.get(len(picks), {}).get(h_cnt, 0.0)
+    total_payout += round(b_amt * mult, 2)
+  return total_bet, total_payout, max_hit_ratio, all_full_hit
+
+
+HOUSE_TOTAL_STAKE = 0.0
+HOUSE_TOTAL_PAID = 0.0
+
+
 def get_round_drawn(cycle_num):
+  global HOUSE_TOTAL_STAKE, HOUSE_TOTAL_PAID
   c_key = int(cycle_num)
   if c_key not in DRAWN_CACHE:
-    rng = random.Random(f"ethio-keno-cycle-{c_key}")
-    DRAWN_CACHE[c_key] = rng.sample(range(1, 81), DRAW_COUNT)
+    entries = ROUND_BETS.get(c_key) or []
+    rng = random.Random(f"ethio-keno-cycle-{c_key}-{len(entries)}")
+    best_drawn = rng.sample(range(1, 81), DRAW_COUNT)
+    if entries:
+      # 70% House Profit / 30% Player Return (RTP = 0.30) engine:
+      # Tracks cumulative stake vs payouts so ~70% stays with the house while ~30% goes back
+      # to players via small/medium wins and partial teaser hits so customers stay engaged.
+      round_stake = sum(float(e["bet"]) for e in entries)
+      projected_total_stake = HOUSE_TOTAL_STAKE + round_stake
+      target_paid_budget = projected_total_stake * 0.30
+      remaining_rtp_budget = max(0.0, target_paid_budget - HOUSE_TOTAL_PAID)
+      # Allow occasional small/medium wins within the 30% player return budget, plus partial hits (e.g. 1-2 matches)
+      allow_win_round = (remaining_rtp_budget >= round_stake * 0.25) and (c_key % 3 != 0)
+      best_score = None
+      for attempt in range(70):
+        cand = rng.sample(range(1, 81), DRAW_COUNT)
+        t_bet, t_pay, max_ratio, all_full = _score_drawn_for_entries(cand, entries)
+        if all_full and t_pay > remaining_rtp_budget:
+          penalty = 200000.0 + t_pay
+        elif t_pay > max(remaining_rtp_budget, round_stake * 0.30 if allow_win_round else 0.0):
+          penalty = 10000.0 + (t_pay - remaining_rtp_budget) * 20.0
+        else:
+          if allow_win_round and 0.0 < t_pay <= remaining_rtp_budget:
+            # Give a real payout within the 30% player pool so players win & don't lose hope
+            penalty = abs(t_pay - min(remaining_rtp_budget, round_stake * 0.85))
+          else:
+            # Non-payout round: mix 0-match rounds with 1-2 partial teaser matches (where payout is 0)
+            want_teaser = (c_key % 2 == 1)
+            if want_teaser and 0.0 < max_ratio <= 0.45 and t_pay == 0.0:
+              penalty = -2.0
+            else:
+              penalty = t_pay * 15.0 + max_ratio * 2.0
+        if best_score is None or penalty < best_score:
+          best_score = penalty
+          best_drawn = cand
+      _, chosen_pay, _, _ = _score_drawn_for_entries(best_drawn, entries)
+      HOUSE_TOTAL_STAKE = round(HOUSE_TOTAL_STAKE + round_stake, 2)
+      HOUSE_TOTAL_PAID = round(HOUSE_TOTAL_PAID + chosen_pay, 2)
+    DRAWN_CACHE[c_key] = best_drawn
   return list(DRAWN_CACHE[c_key])
 
 
@@ -163,6 +288,7 @@ def settle_cycle_if_needed(cycle_num):
           "matches": len(hits),
           "payout": payout,
       })
+    save_persistent_state()
   return drawn, entries
 
 
@@ -184,7 +310,7 @@ def main_reply_kb(uid, base_url):
   return {
       "keyboard": [
           [{"text": "🎮 Play", "web_app": {"url": app_url}}],
-          [{"text": "✉️ ጓደኛ ይጋብዙ"}, {"text": "🆘 እርዳታ"}],
+          [{"text": "✉️ Invite Friends"}, {"text": "🆘 Support"}],
       ],
       "resize_keyboard": True,
   }
@@ -344,16 +470,16 @@ def broadcast_announcement(text="", photo_bytes=None, exclude_uid=""):
       continue
     ok = False
     if photo_bytes:
-      ok = tg_photo(t_str, photo_bytes, caption=text or "📢 ማስታወቂያ")
+      ok = tg_photo(t_str, photo_bytes, caption=text or "📢 Announcement")
     elif text:
-      ok = tg(t_str, "📢 ማስታወቂያ:\n\n" + text)
+      ok = tg(t_str, "📢 Announcement:\n\n" + text)
     if ok:
       sent_count += 1
   return sent_count
 
 
 PAGE = """<!DOCTYPE html>
-<html lang="am"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ETHIO FAST KENO</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 *{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#0e1116;color:#f3f4f6;padding-bottom:64px}
@@ -398,12 +524,12 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
 .nav{position:fixed;bottom:0;left:0;right:0;height:54px;background:#161a21;border-top:1px solid #262c36;display:grid;grid-template-columns:repeat(3,1fr)}
 .nb{background:none;border:none;color:#9ca3af;font-weight:700;font-size:11px}.nb.active{color:#4ade80}
 </style></head><body>
-<div class="top"><strong style="color:#4ade80">⚡ ETHIO FAST KENO</strong><div class="pill">ባላንስ: <span id="bal">0.00</span> ብር</div></div>
-<div class="sub"><div>ምርጫ: <strong id="cnt">0</strong>/10 | መታወቂያ: <strong id="uid-lbl">-</strong></div><div class="tm" id="tm">01:00</div></div>
+<div class="top"><strong style="color:#4ade80">⚡ ETHIO FAST KENO</strong><div class="pill">Balance: <span id="bal">0.00</span> ETB</div></div>
+<div class="sub"><div>Picks: <strong id="cnt">0</strong>/10 | ID: <strong id="uid-lbl">-</strong></div><div class="tm" id="tm">01:00</div></div>
 
 <div id="p-game" class="panel active">
   <div class="stage">
-    <div style="font-size:11px;color:#9ca3af;margin-bottom:6px">የወጡ ቁጥሮች: <strong id="dprog">0 / 20</strong> | ከፍተኛ ሽልማት: <strong id="mwin" style="color:#4ade80">0.00 ብር</strong></div>
+    <div style="font-size:11px;color:#9ca3af;margin-bottom:6px">Drawn Numbers: <strong id="dprog">0 / 20</strong> | Max Win: <strong id="mwin" style="color:#4ade80">0.00 ETB</strong></div>
     <div class="ball" id="ball">--</div>
     <div class="strip" id="strip"></div>
   </div>
@@ -418,31 +544,31 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
       <button class="btn" onclick="setBetVal(Math.max(2,Math.floor(bal)))">Max</button>
     </div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:7px">
-      <button class="btn" onclick="setBetVal(2)">2 ብር</button>
-      <button class="btn" onclick="setBetVal(4)">4 ብር</button>
-      <button class="btn" onclick="setBetVal(6)">6 ብር</button>
-      <button class="btn" onclick="setBetVal(10)">10 ብር</button>
+      <button class="btn" onclick="setBetVal(2)">2 ETB</button>
+      <button class="btn" onclick="setBetVal(4)">4 ETB</button>
+      <button class="btn" onclick="setBetVal(6)">6 ETB</button>
+      <button class="btn" onclick="setBetVal(10)">10 ETB</button>
     </div>
-    <button class="betbtn" id="betbtn" onclick="lockBet()">መደብ ያስገቡ (BET)</button>
+    <button class="betbtn" id="betbtn" onclick="lockBet()">PLACE BET</button>
   </div>
-  <div class="box" id="gmsg">የመምረጫ ሰዓት 1 ደቂቃ ነው። ከ1 እስከ 10 ቁጥሮች እና መደብ (ቢያንስ 2 ብር) መርጠው ይጫኑ ወይም 01:00 ሲያልቅ 20 ቁጥሮች ይወጣሉ።</div>
+  <div class="box" id="gmsg">Betting window is 1 minute. Pick 1 to 10 numbers and a stake (min 2 ETB), then tap Place Bet. When 01:00 ends, 20 numbers are drawn.</div>
   <div class="box">
     <div style="display:flex;justify-content:space-between;align-items:center">
-      <strong>🎟️ የተቆረጡ መደቦች</strong>
+      <strong>🎟️ Active Tickets</strong>
       <span id="tcount" style="color:#4ade80;font-weight:800">0</span>
     </div>
-    <div id="tickets-list"><div style="color:#9ca3af;margin-top:6px">በዚህ ዙር የተቆረጠ መደብ የለም።</div></div>
+    <div id="tickets-list"><div style="color:#9ca3af;margin-top:6px">No tickets placed in this round yet.</div></div>
   </div>
 </div>
 
 <div id="insuf-modal" class="modal-bg" onclick="closeInsuf()">
   <div class="modal-box" onclick="event.stopPropagation()">
     <div class="modal-top">
-      <span style="color:#f87171;font-weight:900;font-size:14px">በቂ ባላንስ የለም</span>
+      <span style="color:#f87171;font-weight:900;font-size:14px">Insufficient Balance</span>
       <button class="modal-x" onclick="closeInsuf()">✕</button>
     </div>
-    <div style="font-size:12px;color:#d1d5db;margin-bottom:10px">ባላንስዎ በቂ አይደለም። እባክዎ ገቢ ያስገቡ ወይም የመደብ መጠን ይቀንሱ።</div>
-    <button class="act" onclick="closeInsuf();tab('wallet')">ወደ ዋሌት ይሂዱ</button>
+    <div style="font-size:12px;color:#d1d5db;margin-bottom:10px">Your balance is too low. Please deposit funds or lower your bet amount.</div>
+    <button class="act" onclick="closeInsuf();tab('wallet')">Go to Wallet</button>
   </div>
 </div>
 
@@ -466,11 +592,19 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
         </div>
         <div style="font-size:12px;font-weight:700;color:#e5e7eb;margin-bottom:6px">1) Send <span id="dep-send-amt">0</span> ETB to this <span id="dep-send-method">Telebirr</span> account</div>
         <div id="dep-tb-card" class="acct-card">
-          <div><div style="font-size:10px;color:#9ca3af;font-weight:700">RECEIVER ACCOUNT (TELEBIRR)</div><b id="acc-tb" style="font-size:13px;color:#fff">__TELEBIRR__</b></div>
+          <div>
+            <div style="font-size:10px;color:#9ca3af;font-weight:700">RECEIVER ACCOUNT (TELEBIRR)</div>
+            <div id="acc-tb" style="font-size:15px;font-weight:900;color:#fff;letter-spacing:0.3px;margin-top:2px">__TELEBIRR__</div>
+            <div style="font-size:11px;color:#9ca3af;margin-top:2px">Name: <b style="color:#e5e7eb">__TELEBIRR_NAME__</b></div>
+          </div>
           <button class="copy-btn" onclick="copyById('acc-tb', this)">Copy</button>
         </div>
         <div id="dep-cbe-card" class="acct-card">
-          <div><div style="font-size:10px;color:#9ca3af;font-weight:700">RECEIVER ACCOUNT (CBE)</div><b id="acc-cbe" style="font-size:13px;color:#fff">__CBE__</b></div>
+          <div>
+            <div style="font-size:10px;color:#9ca3af;font-weight:700">RECEIVER ACCOUNT (CBE)</div>
+            <div id="acc-cbe" style="font-size:15px;font-weight:900;color:#fff;letter-spacing:0.3px;margin-top:2px">__CBE__</div>
+            <div style="font-size:11px;color:#9ca3af;margin-top:2px">Name: <b style="color:#e5e7eb">__CBE_NAME__</b></div>
+          </div>
           <button class="copy-btn" onclick="copyById('acc-cbe', this)">Copy</button>
         </div>
       </div>
@@ -498,17 +632,17 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
   <div class="box"><strong>⏳ Withdraw Status</strong><div id="wlist">No withdraw requests yet.</div></div>
 </div>
 
-<div id="p-hist" class="panel"><div class="box"><strong>📜 የጨዋታ ታሪክ</strong><div id="hlist">ምንም ታሪክ የለም።</div></div></div>
+<div id="p-hist" class="panel"><div class="box"><strong>📜 Bet History</strong><div id="hlist">No bet history yet.</div></div></div>
 
 <div id="p-rules" class="panel">
   <div class="box">
-    <strong>📜 የጨዋታ ህጎች እና ክፍያ (RULES)</strong>
-    <p style="margin:6px 0">በዚህ ህግ መሠረት ክፍያችንን እንከፍላለን። ከ1 እስከ 10 ቁጥሮች መርጠው በሚወጡት 20 ቁጥሮች ውስጥ በሚገናኙት ብዛት መሠረት መደቡ በMultiplier ይባዛል (ለምሳሌ 3 ቁጥር መርጠው 2 ቢገናኙ 1.5x፣ <b>3ቱም ከወጡ 30x — 30 ብር</b>)።</p>
+    <strong>📜 Game Rules & Payout Table</strong>
+    <p style="margin:6px 0">Payouts follow the multiplier table below. Pick 1 to 10 numbers; your stake is multiplied based on how many of your picks match the 20 drawn numbers (for example, picking 3 numbers and matching 2 pays 1.5x, and <b>matching all 3 pays 30x</b>).</p>
     <div style="overflow-x:auto;margin-top:8px">
       <table style="width:100%;border-collapse:collapse;font-size:11px;text-align:center">
         <thead>
           <tr style="background:#1f242d;color:#4ade80">
-            <th style="padding:5px;border:1px solid #2b303b">ምርጫ</th>
+            <th style="padding:5px;border:1px solid #2b303b">Picks</th>
             <th style="padding:5px;border:1px solid #2b303b">1</th>
             <th style="padding:5px;border:1px solid #2b303b">2</th>
             <th style="padding:5px;border:1px solid #2b303b">3</th>
@@ -539,10 +673,10 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
 </div>
 
 <div class="nav" style="grid-template-columns:repeat(4,1fr)">
-  <button class="nb active" id="n-game" onclick="tab('game')">ጨዋታ</button>
+  <button class="nb active" id="n-game" onclick="tab('game')">Game</button>
   <button class="nb" id="n-wallet" onclick="tab('wallet')">Wallet</button>
-  <button class="nb" id="n-hist" onclick="tab('hist')">ታሪክ</button>
-  <button class="nb" id="n-rules" onclick="tab('rules')">ህጎች</button>
+  <button class="nb" id="n-hist" onclick="tab('hist')">History</button>
+  <button class="nb" id="n-rules" onclick="tab('rules')">Rules</button>
 </div>
 
 <script>
@@ -569,7 +703,7 @@ function onBetInput(v){
     bet=num;
     const t=PT[picks.size]||{};
     const mx=Math.max(0,...Object.values(t));
-    document.getElementById("mwin").textContent=(bet*mx).toFixed(2)+" ብር";
+    document.getElementById("mwin").textContent=(bet*mx).toFixed(2)+" ETB";
   }
 }
 function syncedNowSec(){return (Date.now()+serverOffsetMs)/1000;}
@@ -591,7 +725,7 @@ for(let i=1;i<=80;i++){
   b.onclick=()=>{
     if(drawing)return;
     if(picks.has(i)){picks.delete(i);b.classList.remove("sel");}
-    else{if(picks.size>=10)return alert("ከ10 ቁጥር በላይ መምረጥ አይቻልም");picks.add(i);b.classList.add("sel");}
+    else{if(picks.size>=10)return alert("You cannot select more than 10 numbers.");picks.add(i);b.classList.add("sel");}
     ui();
   };
   g.appendChild(b);
@@ -604,20 +738,20 @@ function copyById(elId,btn){
   if(!txt)return;
   if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).catch(()=>{});}
   const ta=document.createElement("textarea");ta.value=txt;document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);
-  if(btn){const prev=btn.textContent;btn.textContent="ተቀድቷል!";setTimeout(()=>btn.textContent=prev,1200);}
+  if(btn){const prev=btn.textContent;btn.textContent="Copied!";setTimeout(()=>btn.textContent=prev,1200);}
 }
 function ui(){
   document.getElementById("cnt").textContent=picks.size;
   const bi=document.getElementById("bval");if(bi&&document.activeElement!==bi){bi.value=bet;}
   const t=PT[picks.size]||{};
   const mx=Math.max(0,...Object.values(t));
-  document.getElementById("mwin").textContent=(bet*mx).toFixed(2)+" ብር";
+  document.getElementById("mwin").textContent=(bet*mx).toFixed(2)+" ETB";
 }
 
 function tab(k){["game","wallet","hist","rules"].forEach(x=>{document.getElementById("p-"+x).classList.toggle("active",x===k);document.getElementById("n-"+x).classList.toggle("active",x===k);});load();}
 function showDepositStep2(){
   const amt=Number(document.getElementById("da").value||0);
-  if(!amt||amt<10)return alert("ዝቅተኛ ገቢ 10 ብር ነው።");
+  if(!amt||amt<10)return alert("Minimum deposit is 10 ETB.");
   const m=document.getElementById("dm").value;
   document.getElementById("dep-sum-amt").textContent=`${amt} ETB`;
   document.getElementById("dep-sum-meta").textContent=`• ${m} • just now`;
@@ -639,16 +773,16 @@ function cancelDepositStep2(){
 function renderTickets(){
   const wrap=document.getElementById("tickets-list");
   document.getElementById("tcount").textContent=tickets.length;
-  if(!tickets.length){wrap.innerHTML='<div style="color:#9ca3af;margin-top:6px">በዚህ ዙር የተቆረጠ መደብ የለም።</div>';return;}
+  if(!tickets.length){wrap.innerHTML='<div style="color:#9ca3af;margin-top:6px">No tickets placed in this round yet.</div>';return;}
   wrap.innerHTML=tickets.map(tk=>{
-    let stHtml='<span class="st-wait">በመጠባበቅ ላይ</span>';
+    let stHtml='<span class="st-wait">Pending</span>';
     let cls="tcard";
     if(roundDone){
-      if(Number(tk.payout||0)>0){stHtml=`<span class="st-win">${Number(tk.payout).toFixed(2)} ብር አሸንፈሃል</span>`;cls+=" won-card";}
-      else{stHtml='<span class="st-lose">እንደገና ይሞክሩ</span>';}
+      if(Number(tk.payout||0)>0){stHtml=`<span class="st-win">Won ${Number(tk.payout).toFixed(2)} ETB</span>`;cls+=" won-card";}
+      else{stHtml='<span class="st-lose">Please try again</span>';}
     }
     return `<div class="${cls}">
-      <div class="tcard-top"><span><b>${tk.player}</b></span><span>መደብ <b>${Number(tk.bet).toFixed(0)}</b> | ${stHtml}</span></div>
+      <div class="tcard-top"><span><b>${tk.player}</b></span><span>Bet <b>${Number(tk.bet).toFixed(0)} ETB</b> | ${stHtml}</span></div>
       <div class="tnums">${tk.picks.map(n=>`<span class="tnum${drawnSoFar.has(n)?" matched":""}">${n}</span>`).join("")}</div>
     </div>`;
   }).join("");
@@ -677,31 +811,44 @@ async function load(){
       }else{
         tickets=d.tickets||[];
         roundDone=false;
+        document.getElementById("bal").textContent=bal.toFixed(2);
       }
     }
-    document.getElementById("bal").textContent=bal.toFixed(2);
     renderTickets();
-    document.getElementById("hlist").innerHTML=d.bets.length?d.bets.slice().reverse().map(x=>`<div>መደብ: ${x.bet} ብር | የተገኙ: ${x.matches} | ሽልማት: ${x.payout} ብር</div>`).join(""):"ምንም ታሪክ የለም።";
-    document.getElementById("wlist").innerHTML=d.wds.length?d.wds.slice().reverse().map(w=>`<div style="padding:6px 0;border-bottom:1px solid #2b303b">${w.id} | ${w.method} (${w.dest}) | ${w.amount} ብር | <b>${w.status}</b>${w.status==="Pending"?`<br><button class="appb" onclick="appw('${w.id}')">አጽድቅ (Complete)</button>`:""}</div>`).join(""):"ምንም ጥያቄ የለም።";
+    document.getElementById("hlist").innerHTML=d.bets.length?d.bets.slice().reverse().map(x=>`<div>Bet: ${x.bet} ETB | Matches: ${x.matches} | Win: ${x.payout} ETB</div>`).join(""):"No bet history yet.";
+    document.getElementById("wlist").innerHTML=d.wds.length?d.wds.slice().reverse().map(w=>`<div style="padding:6px 0;border-bottom:1px solid #2b303b">${w.id} | ${w.method} (${w.dest}) | ${w.amount} ETB | <b>${w.status}</b>${w.status==="Pending"?`<br><button class="appb" onclick="appw('${w.id}')">Approve (Complete)</button>`:""}</div>`).join(""):"No withdraw requests yet.";
   }catch(e){}
 }
 function clearSelectionsAndBoard(){picks.clear();document.querySelectorAll(".t").forEach(x=>x.classList.remove("sel"));ui();}
 function resetDrawStage(){drawnSoFar.clear();roundDone=false;document.getElementById("strip").innerHTML="";document.getElementById("dprog").textContent="0 / 20";document.getElementById("ball").textContent="--";const bn=document.getElementById("out-banner");bn.className="banner";bn.textContent="";}
 async function lockBet(){
   if(drawing)return;
-  if(!picks.size)return alert("ቢያንስ 1 ቁጥር ይምረጡ");
-  if(bet<2)return alert("ዝቅተኛ መደብ 2 ብር ነው");
+  if(!picks.size)return alert("Please select at least 1 number.");
+  if(bet<2)return alert("Minimum bet is 2 ETB.");
   if(bal<=0||bet>bal)return showInsuf();
   const cInfo=calcGlobalCycleInfo();
-  if(cInfo.phase!=="betting")return alert("የዚህ ዙር መቁረጫ ሰዓት አልቋል፤ እባክዎ የቀጣዩን ዙር ይጠብቁ።");
+  if(cInfo.phase!=="betting")return alert("Betting for this round has closed. Please wait for the next round.");
   const r=await fetch("/api/reserve_bet",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({uid,picks:Array.from(picks),bet})});
   const d=await r.json();
   if(!d.ok){if(d.insufficient)return showInsuf();return alert(d.msg);}
   bal=d.balance;document.getElementById("bal").textContent=bal.toFixed(2);tickets=d.tickets||tickets;renderTickets();
   queued={picks:Array.from(picks),bet,cycleNum:d.cycle_num||cInfo.cycleNum};
   clearSelectionsAndBoard();
-  document.getElementById("gmsg").textContent=`✅ መደብ (${bet} ብር) ተይዟል (${queued.picks.length} ቁጥር)። 01:00 ሲያልቅ 20 ቁጥሮች ይወጣሉ።`;
+  document.getElementById("gmsg").textContent=`✅ Bet locked (${bet} ETB on ${queued.picks.length} numbers). 20 numbers will be drawn when 01:00 ends.`;
 }
+function appendDrawnChipInstant(n, watchedSet, updateMainBall){
+  if(drawnSoFar.has(n))return;
+  drawnSoFar.add(n);
+  if(updateMainBall){
+    document.getElementById("ball").textContent=n;
+  }
+  document.getElementById("dprog").textContent=`${drawnSoFar.size} / 20`;
+  const ch=document.createElement("span");
+  ch.className="chip"+(watchedSet.has(n)?" h":"");
+  ch.textContent=n;
+  document.getElementById("strip").appendChild(ch);
+}
+
 async function runRoundDraw(targetCycle){
   if(drawing)return;
   const cNum=(typeof targetCycle==="number")?targetCycle:calcGlobalCycleInfo().cycleNum;
@@ -709,62 +856,76 @@ async function runRoundDraw(targetCycle){
   lastDrawnCycle=cNum;
   drawing=true;
   resetDrawStage();
-  const activeBet=(queued && queued.cycleNum===cNum)?queued:null;
+  let activeBet=(queued && queued.cycleNum===cNum)?queued:null;
   if(activeBet)queued=null;
 
   const r=await fetch("/api/play",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({uid,cycle_num:cNum})});
   const d=await r.json();
-  if(typeof d.balance==="number"){
-    bal=d.balance;
-    document.getElementById("bal").textContent=bal.toFixed(2);
+  if(!activeBet && d.my_ticket){
+    activeBet={picks:d.my_ticket.picks||[],bet:Number(d.my_ticket.bet||0),cycleNum:cNum};
   }
   if(d.tickets)tickets=d.tickets;
   renderTickets();
 
-  const stepMs=(syncTiming.drawStepSec||2)*1000;
-  const holdMs=(syncTiming.resultHoldSec||5)*1000;
+  const stepSec=syncTiming.drawStepSec||2;
   const drawnArr=d.drawn||[];
   const watched=new Set(activeBet?activeBet.picks:[]);
 
-  for(let i=0;i<drawnArr.length;i++){
+  // Any numbers already drawn by the server up to this exact moment appear immediately
+  // seated in place without fast-forwarding or racing.
+  const initInfo=calcGlobalCycleInfo();
+  const alreadyCount=(initInfo.cycleNum===cNum && initInfo.phase==="drawing")
+    ? Math.min(drawnArr.length, Math.max(0, Math.floor(initInfo.drawElapsedSec / stepSec) + 1))
+    : 0;
+
+  if(alreadyCount > 0){
+    for(let i=0;i<alreadyCount;i++){
+      appendDrawnChipInstant(drawnArr[i], watched, i === alreadyCount - 1);
+    }
+    renderTickets();
+  }
+
+  // Subsequent numbers appear one by one in sync with the server draw timeline
+  for(let i=alreadyCount;i<drawnArr.length;i++){
     const cNow=calcGlobalCycleInfo();
     if(cNow.phase==="betting" && cNow.cycleNum!==cNum)break;
-    const n=drawnArr[i];
-    drawnSoFar.add(n);
-    document.getElementById("ball").textContent=n;
-    document.getElementById("dprog").textContent=`${i+1} / ${drawnArr.length}`;
-    const ch=document.createElement("span");
-    ch.className="chip"+(watched.has(n)?" h":"");
-    ch.textContent=n;
-    document.getElementById("strip").appendChild(ch);
+    const targetElapsed=i * stepSec;
+    while(true){
+      const tickNow=calcGlobalCycleInfo();
+      if(tickNow.phase==="betting" && tickNow.cycleNum!==cNum)break;
+      if(tickNow.cycleNum!==cNum || tickNow.drawElapsedSec >= targetElapsed - 0.05)break;
+      const waitMs=Math.min(250, Math.max(50, (targetElapsed - tickNow.drawElapsedSec)*1000));
+      await new Promise(res=>setTimeout(res,waitMs));
+    }
+    const afterWait=calcGlobalCycleInfo();
+    if(afterWait.phase==="betting" && afterWait.cycleNum!==cNum)break;
+    appendDrawnChipInstant(drawnArr[i], watched, true);
     renderTickets();
-    const targetElapsed=(i+1)*(syncTiming.drawStepSec||2);
-    const remWaitMs=Math.max(150,Math.min(stepMs,(targetElapsed-calcGlobalCycleInfo().drawElapsedSec)*1000));
-    await new Promise(res=>setTimeout(res,remWaitMs));
   }
 
   roundDone=true;
   renderTickets();
-  if(typeof d.balance==="number"){
-    bal=d.balance;
-    document.getElementById("bal").textContent=bal.toFixed(2);
-  }
   const bn=document.getElementById("out-banner");
-  if(activeBet){
+  const hasPlayed=Boolean(activeBet) || Number(d.my_bet||0)>0;
+  if(hasPlayed){
     const pay=Number(d.payout||0);
     const mt=Number(d.matches||0);
     const hList=d.hits||[];
     if(pay>0){
       bn.className="banner winb";
-      bn.textContent=`🎉 ${pay.toFixed(2)} ብር አሸንፈሃል (${mt} ተዛማጅ) — ወደ ባላንስ ተጨምሯል!`;
+      bn.textContent=`🎉 Congratulations! You won ${pay.toFixed(2)} ETB (${mt} matches)!`;
     }else{
       bn.className="banner tryb";
-      bn.textContent=`እንደገና ይሞክሩ (${mt} ተዛማጅ)`;
+      bn.textContent=`Please try again — ${mt} matches`;
     }
-    document.getElementById("gmsg").innerHTML=`<b>ተዛማጅ (${mt}):</b> ${hList.join(", ")||"0"} | <b>ሽልማት:</b> ${pay.toFixed(2)} ብር`;
-    const drawTotalSec=(syncTiming.drawCount||20)*(syncTiming.drawStepSec||2);
-    const remHoldMs=Math.max(500,Math.min(holdMs,(drawTotalSec+(syncTiming.resultHoldSec||5)-calcGlobalCycleInfo().drawElapsedSec)*1000));
-    await new Promise(res=>setTimeout(res,remHoldMs));
+    document.getElementById("gmsg").innerHTML=`<b>Matches (${mt}):</b> ${hList.join(", ")||"None"} | <b>Win:</b> ${pay.toFixed(2)} ETB`;
+    await new Promise(res=>setTimeout(res,4000));
+  }else{
+    await new Promise(res=>setTimeout(res,2500));
+  }
+  if(typeof d.balance==="number"){
+    bal=d.balance;
+    document.getElementById("bal").textContent=bal.toFixed(2);
   }
   bn.className="banner";bn.textContent="";
   tickets=[];
@@ -774,7 +935,7 @@ async function runRoundDraw(targetCycle){
 }
 async function dep(){
   const rawTxt=(document.getElementById("dt").value||"").trim();
-  if(!rawTxt)return alert("እባክዎ የደረሰውን SMS ወይም Transaction ID ያስገቡ።");
+  if(!rawTxt)return alert("Please paste the confirmation SMS or Transaction ID.");
   const msgEl=document.getElementById("dmsg");
   msgEl.textContent="";
   const r=await fetch("/api/deposit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({uid,mode:"sms",method:document.getElementById("dm").value,amount:document.getElementById("da").value,tx:rawTxt,sms_text:rawTxt})});
@@ -826,10 +987,21 @@ ui();load();
 </script></body></html>"""
 
 
+@app.route("/ping")
+@app.route("/healthz")
+def healthz():
+  return jsonify({"ok": True, "service": "ethio-fast-keno", "ts": int(time.time())})
+
+
 @app.route("/")
 def home():
-  html = PAGE.replace("__TELEBIRR__", TELEBIRR_ACCOUNT).replace(
-      "__CBE__", CBE_ACCOUNT
+  tb_num, tb_owner = split_account_and_name(TELEBIRR_ACCOUNT, TELEBIRR_NAME)
+  cbe_num, cbe_owner = split_account_and_name(CBE_ACCOUNT, CBE_NAME)
+  html = (
+      PAGE.replace("__TELEBIRR__", tb_num)
+      .replace("__TELEBIRR_NAME__", tb_owner)
+      .replace("__CBE__", cbe_num)
+      .replace("__CBE_NAME__", cbe_owner)
   )
   return Response(html, mimetype="text/html; charset=utf-8")
 
@@ -869,32 +1041,43 @@ def webhook():
     uid = str(from_user.get("id", "")).strip()
     if data == "register_bonus" and uid:
       u = get_u(uid)
-      if not u["registered"]:
+      already_claimed = bool(u.get("registered") or u.get("bonus_claimed") or uid in CLAIMED_BONUS_USERS)
+      if not already_claimed:
         u["registered"] = True
-        if not u["bonus_claimed"]:
-          u["bonus_claimed"] = True
-          u["balance"] = round(u["balance"] + 10.0, 2)
-        inviter_id = u.get("referred_by")
-        if inviter_id and inviter_id != uid and not u.get("ref_rewarded"):
+        u["bonus_claimed"] = True
+        CLAIMED_BONUS_USERS.add(uid)
+        u["balance"] = round(u["balance"] + 10.0, 2)
+        inviter_id = (u.get("referred_by") or REFERRED_USERS.get(uid) or "").strip()
+        if (
+            inviter_id
+            and inviter_id != uid
+            and inviter_id in USERS
+            and not u.get("ref_rewarded")
+        ):
           u["ref_rewarded"] = True
           inv_u = get_u(inviter_id)
           inv_u["balance"] = round(inv_u["balance"] + 10.0, 2)
           inv_u["referrals"] = int(inv_u.get("referrals", 0)) + 1
           tg(
               inviter_id,
-              f"🎉 ጓደኛዎ በግብዣ ሊንክዎ ተመዝግቧል!\n🎁 የሪፈራል ሽልማት (አንድ ጊዜ ብቻ) ተጨምሮልዎታል (ጠቅላላ የተጋበዙ: {inv_u['referrals']} | ባላንስ: {inv_u['balance']:.2f} ብር)።",
+              f"🎉 Your friend joined via your referral link and verified their registration!\n🎁 You received a 10.00 ETB referral bonus (one-time only). Total referrals: {inv_u['referrals']} | Balance: {inv_u['balance']:.2f} ETB",
           )
-        tg_answer_cb(cb_id, "ምዝገባ ተጠናቋል! 10 ብር ቦነስ ተሰጥቶዎታል።")
+        save_persistent_state()
+        tg_answer_cb(cb_id, "Registration complete! 10.00 ETB one-time bonus credited.")
         tg(
             uid,
-            f"✅ ምዝገባዎ በተሳካ ሁኔታ ተጠናቋል!\n🎁 የ10.00 ብር ቦነስ ተሰጥቶዎታል (አንድ ጊዜ ብቻ)።\n💰 ባላንስዎ: {u['balance']:.2f} ብር",
+            f"✅ Registration verified and completed!\n🎁 You received a 10.00 ETB welcome bonus (one-time only).\n💰 Your Balance: {u['balance']:.2f} ETB",
             main_reply_kb(uid, base_url),
         )
       else:
-        tg_answer_cb(cb_id, "ቀድሞ ተመዝግበዋል (ቦነስ አንድ ጊዜ ብቻ ነው)።")
+        u["registered"] = True
+        u["bonus_claimed"] = True
+        CLAIMED_BONUS_USERS.add(uid)
+        save_persistent_state()
+        tg_answer_cb(cb_id, "Already registered! Welcome bonus is one-time only.")
         tg(
             uid,
-            f"ℹ️ ቀድሞ ተመዝግበዋል። ቦነስ የሚሰጠው አንድ ጊዜ ብቻ ነው።\n💰 ባላንስዎ: {u['balance']:.2f} ብር",
+            f"ℹ️ You have already registered and claimed your welcome bonus. Bonus can only be claimed once.\n💰 Your Balance: {u['balance']:.2f} ETB",
             main_reply_kb(uid, base_url),
         )
     elif data.startswith("approve_wd:"):
@@ -908,8 +1091,7 @@ def webhook():
         tg_answer_cb(cb_id, f"{wid} Approved & Completed!")
         tg(
             w["uid"],
-            f"✅ Completed! የ {w['amount']:.2f} ብር የወጪ ጥያቄዎ ({wid}) ተጠናቆ"
-            f" ወደ አካውንትዎ ({w['dest']}) ተልኳል።",
+            f"✅ Completed! Your withdrawal request of {w['amount']:.2f} ETB ({wid}) has been sent to {w['dest']}.",
         )
         msg_obj = cb.get("message") or {}
         chat_obj = msg_obj.get("chat") or {}
@@ -980,7 +1162,7 @@ def webhook():
         clean_cap = re.sub(r"(?i)^/(broadcast|post)\s*", "", caption)
         clean_cap = re.sub(r"(?i)#(broadcast|post)", "", clean_cap).strip()
         cnt = broadcast_announcement(text=clean_cap, photo_bytes=img_bytes, exclude_uid=uid)
-        tg(uid, f"📢 ማስታወቂያው ለ {cnt} ተጠቃሚዎች ተልኳል።", main_reply_kb(uid, base_url))
+        tg(uid, f"📢 Announcement sent to {cnt} users.", main_reply_kb(uid, base_url))
         return jsonify({"ok": True})
 
       shot_digest = hashlib.sha256(img_bytes).hexdigest()[:16].upper()
@@ -999,7 +1181,7 @@ def webhook():
         if u["invalid_shots"] >= 2:
           tg(
               uid,
-              "⚠️ ይህ ስክሪንሻት ከዚህ በፊት ጥቅም ላይ ውሏል (ደብል ነው)። እባክዎ አዲስ እና ትክክለኛ የክፍያ ስክሪንሻት ብቻ ይላኩ።",
+              "⚠️ Duplicate screenshot rejected. This payment receipt has already been used. Please send a new valid receipt.",
               main_reply_kb(uid, base_url),
           )
         return jsonify({"ok": True})
@@ -1023,7 +1205,7 @@ def webhook():
         )
         tg(
             uid,
-            f"✅ ተረጋግጧል (Completed)! {amt:.2f} ብር ወደ ባላንስዎ ተጨምሯል።\n💰 አዲስ ባላንስዎ: {u['balance']:.2f} ብር",
+            f"✅ Verified & Completed! {amt:.2f} ETB has been added to your balance.\n💰 New Balance: {u['balance']:.2f} ETB",
             main_reply_kb(uid, base_url),
         )
       else:
@@ -1041,7 +1223,7 @@ def webhook():
         if u["invalid_shots"] >= 2:
           tg(
               uid,
-              "❌ ክፍያው አልተረጋገጠም (ትክክለኛ የክፍያ ማረጋገጫ ወይም በCaption የገንዘቡ መጠን ቢያንስ 10 ብር አልተገኘም)። ተደጋጋሚ ስህተት ስለታየ እባክዎ ትክክለኛውን የክፍያ ማስረጃ ብቻ ይላኩ።",
+              "❌ Payment not verified (valid receipt or amount >= 10 ETB missing in caption). Please send a valid payment receipt only.",
               main_reply_kb(uid, base_url),
           )
     return jsonify({"ok": True})
@@ -1052,18 +1234,27 @@ def webhook():
   u = get_u(uid)
   if text.startswith("/start"):
     parts = text.split(maxsplit=1)
+    already_claimed = bool(u.get("registered") or u.get("bonus_claimed") or uid in CLAIMED_BONUS_USERS)
     if len(parts) == 2 and parts[1].startswith("ref_"):
       inviter_id = parts[1][4:].strip()
-      if inviter_id and inviter_id != uid and not u.get("referred_by"):
+      if (
+          not already_claimed
+          and inviter_id
+          and inviter_id != uid
+          and not u.get("referred_by")
+          and uid not in REFERRED_USERS
+      ):
         u["referred_by"] = inviter_id
-    if not u["registered"]:
+        REFERRED_USERS[uid] = inviter_id
+        save_persistent_state()
+    if not already_claimed:
       tg(
           uid,
-          "ሰላም! ወደ ETHIO FAST KENO እንኳን በደህና መጡ።\n\n"
-          "ለመጀመር በቴሌግራምዎ ይመዝገቡ። ሲመዘገቡ አንድ ጊዜ ብቻ 10.00 ብር ቦነስ ያገኛሉ።",
+          "Welcome to ETHIO FAST KENO!\n\n"
+          "Tap below to register with your Telegram account and claim your one-time 10.00 ETB welcome bonus.",
           {
               "inline_keyboard": [[{
-                  "text": "✅ ተመዝገብ እና 10 ብር ቦነስ ውሰድ",
+                  "text": "✅ Register & Claim 10 ETB Bonus",
                   "callback_data": "register_bonus",
               }]]
           },
@@ -1071,30 +1262,30 @@ def webhook():
     else:
       tg(
           uid,
-          f"ሰላም! ወደ ETHIO FAST KENO እንኳን በደህና መጡ።\n💰 ባላንስዎ: {u['balance']:.2f} ብር",
+          f"Welcome back to ETHIO FAST KENO!\n💰 Your Balance: {u['balance']:.2f} ETB",
           main_reply_kb(uid, base_url),
       )
     return jsonify({"ok": True})
 
-  if text in ("🎮 ይጫወቱ", "🎮 Play", "Play", "Play Games"):
+  if text in ("🎮 Play", "Play", "Play Games"):
     if not u["registered"]:
       tg(
           uid,
-          "እባክዎ መጀመሪያ ይመዝገቡ።",
+          "Please register first to start playing.",
           {"inline_keyboard": [[{
-              "text": "✅ ተመዝገብ እና 10 ብር ቦነስ ውሰድ",
+              "text": "✅ Register & Claim 10 ETB Bonus",
               "callback_data": "register_bonus",
           }]]},
       )
     else:
       tg(
           uid,
-          f"🎮 ለመጫወት ከታች ያለውን 'ይጫወቱ' ቁልፍ ይጫኑ።\n💰 ባላንስዎ: {u['balance']:.2f} ብር",
+          f"🎮 Tap the 'Play' button below to launch the game.\n💰 Your Balance: {u['balance']:.2f} ETB",
           main_reply_kb(uid, base_url),
       )
     return jsonify({"ok": True})
 
-  if text in ("✉️ ጓደኛ ይጋብዙ", "✉️ Invite Friends", "Invite Friends"):
+  if text in ("✉️ Invite Friends", "Invite Friends"):
     bot_info_user = get_bot_username()
     ref_link = (
         f"https://t.me/{bot_info_user}?start=ref_{uid}"
@@ -1105,7 +1296,7 @@ def webhook():
         "https://t.me/share/url?"
         + requests.compat.urlencode({
             "url": ref_link,
-            "text": "ጓደኛዬ ወደ ETHIO FAST KENO ይቀላቀሉ!",
+            "text": "Join me on ETHIO FAST KENO and play!",
         })
     )
     share_kb = {
@@ -1116,13 +1307,13 @@ def webhook():
     }
     tg(
         uid,
-        "🚀 ጓደኞችዎን ይጋብዙ! ከታች ያለውን ቁልፍ በመጫን ሊንኩን ለጓደኞችዎ ሼር ያድርጉ:\n"
+        "🚀 Invite your friends! Tap the button below to share your referral link:\n"
         f"{ref_link}",
         share_kb,
     )
     return jsonify({"ok": True})
 
-  if text in ("🆘 እርዳታ", "🆘 Support", "Support"):
+  if text in ("🆘 Support", "Support"):
     target_handle = (SUPPORT_HANDLE or INTERNAL_DEST_HANDLE or "ethio_keno_play_26").lstrip("@")
     sup_url = f"https://t.me/{target_handle}"
     sup_kb = {
@@ -1133,7 +1324,7 @@ def webhook():
     }
     tg(
         uid,
-        f"🆘 የድጋፍ ቡድን (Support):\nቀጥታ ወደ @{target_handle} በመሄድ የሚፈልጉትን ጥያቄ ይጠይቁ፤ ድጋፍ ሰጪው በቀጥታ ይመልስልዎታል።",
+        f"🆘 Customer Support:\nMessage @{target_handle} directly for help and support.",
         sup_kb,
     )
     return jsonify({"ok": True})
@@ -1144,16 +1335,16 @@ def webhook():
     ann_txt = re.sub(r"(?i)^/(broadcast|post)\s+", "", text).strip()
     if ann_txt:
       cnt = broadcast_announcement(text=ann_txt, exclude_uid=uid)
-      tg(uid, f"📢 ማስታወቂያው ለ {cnt} ተጠቃሚዎች ተልኳል።", main_reply_kb(uid, base_url))
+      tg(uid, f"📢 Announcement sent to {cnt} users.", main_reply_kb(uid, base_url))
     else:
-      tg(uid, "ℹ️ ማስታወቂያ ለመላክ: /post የማስታወቂያ ጽሑፍ ብለው ይላኩ ወይም ፎቶ ከCaption ጋር ይላኩ።", main_reply_kb(uid, base_url))
+      tg(uid, "ℹ️ To send an announcement: type /post followed by your message, or send a photo with caption.", main_reply_kb(uid, base_url))
     return jsonify({"ok": True})
 
   if u["registered"] and not text.startswith("/"):
     notify_internal(f"💬 Support Message\nCustomer ID: {uid}\nMessage: {text}")
     tg(
         uid,
-        "✅ መልዕክትዎ ወደ ድጋፍ ቡድኑ ደርሷል፤ በቅርቡ ምላሽ ይሰጥዎታል።",
+        "✅ Your message has been sent to Support. We will reply shortly.",
         main_reply_kb(uid, base_url),
     )
 
@@ -1227,14 +1418,15 @@ def api_reserve_bet():
   u = get_u(uid)
   st = current_cycle_state(time.time())
   if st["phase"] != "betting":
-    return jsonify({"ok": False, "msg": "የዚህ ዙር መቁረጫ ሰዓት አልቋል፤ እባክዎ የቀጣዩን ዙር ይጠብቁ።"})
+    return jsonify({"ok": False, "msg": "Betting for this round has closed. Please wait for the next round."})
   if not (1 <= len(picks) <= 10) or bet < 2:
-    return jsonify({"ok": False, "msg": "ከ1 እስከ 10 ቁጥር እና ቢያንስ 2 ብር ይምረጡ።"})
+    return jsonify({"ok": False, "msg": "Please pick 1 to 10 numbers and bet at least 2 ETB."})
   if u["balance"] <= 0 or bet > u["balance"]:
     return jsonify(
-        {"ok": False, "insufficient": True, "msg": "በቂ ባላንስ የለም"}
+        {"ok": False, "insufficient": True, "msg": "Insufficient balance."}
     )
   u["balance"] = round(u["balance"] - bet, 2)
+  save_persistent_state()
   c_num = st["cycle_num"]
   ROUND_BETS.setdefault(c_num, []).append({
       "uid": uid,
@@ -1287,6 +1479,8 @@ def api_play():
       "balance": u["balance"],
       "cycle_num": c_num,
       "drawn": drawn,
+      "my_ticket": my_entry,
+      "my_bet": my_entry["bet"] if my_entry else 0.0,
       "hits": my_entry["hits"] if my_entry else [],
       "matches": my_entry["matches"] if my_entry else 0,
       "payout": my_entry["payout"] if my_entry else 0.0,
@@ -1306,13 +1500,13 @@ def api_deposit():
 
   if amt < 10:
     u["invalid_shots"] = int(u.get("invalid_shots", 0)) + 1
-    msg_txt = "❌ ክፍያው አልተረጋገጠም፤ ዝቅተኛ ገቢ 10 ብር ነው።" if u["invalid_shots"] >= 2 else ""
+    msg_txt = "❌ Payment not verified. Minimum deposit is 10 ETB." if u["invalid_shots"] >= 2 else ""
     return jsonify({"ok": False, "silent": not bool(msg_txt), "msg": msg_txt})
 
   if not tx:
     u["invalid_shots"] = int(u.get("invalid_shots", 0)) + 1
     msg_txt = (
-        "❌ ትክክለኛ የክፍያ ኮድ/SMS አልተገኘም። እባክዎ የደረሰውን SMS ወይም Transaction ID ያስገቡ።"
+        "❌ Valid Transaction ID / SMS not found. Please paste your confirmation SMS or Transaction ID."
         if u["invalid_shots"] >= 2
         else ""
     )
@@ -1322,7 +1516,7 @@ def api_deposit():
   if st == "duplicate":
     u["invalid_shots"] = int(u.get("invalid_shots", 0)) + 1
     msg_txt = (
-        "⚠️ ደብል ነው! ይህ የክፍያ ኮድ ቀድሞ ጥቅም ላይ ውሏል።"
+        "⚠️ Duplicate Transaction ID! This payment reference has already been used."
         if u["invalid_shots"] >= 2
         else ""
     )
@@ -1330,7 +1524,7 @@ def api_deposit():
   if st != "ok":
     u["invalid_shots"] = int(u.get("invalid_shots", 0)) + 1
     msg_txt = (
-        "❌ የክፍያ ኮዱ ትክክል አይደለም ወይም አልተረጋገጠም። እባክዎ ትክክለኛውን ኮድ/SMS ያስገቡ።"
+        "❌ Invalid or unverified Transaction ID. Please check and enter a valid confirmation SMS/ID."
         if u["invalid_shots"] >= 2
         else ""
     )
@@ -1339,6 +1533,7 @@ def api_deposit():
   USED_TX.add(tx)
   u["invalid_shots"] = 0
   u["balance"] = round(u["balance"] + amt, 2)
+  save_persistent_state()
   notify_internal(
       f"✅ Auto-Credited Deposit\nCustomer ID: {uid}\nMethod: {m}\nRef: {tx}\nAmount: {amt:.2f} ETB"
   )
@@ -1346,8 +1541,7 @@ def api_deposit():
       "ok": True,
       "balance": u["balance"],
       "msg": (
-          f"✅ ተረጋግጧል (Completed)! በ {m} ({tx}) {amt:.2f} ብር ወደ"
-          " ባላንስዎ ተጨምሯል።"
+          f"✅ Verified & Completed! {amt:.2f} ETB via {m} ({tx}) has been added to your balance."
       ),
   })
 
@@ -1358,8 +1552,7 @@ def api_withdraw():
     return jsonify({
         "ok": False,
         "msg": (
-            "⏰ ገንዘብ ማውጣት የሚቻለው ከጠዋት 2:00 እስከ ማታ 3:00 ብቻ ነው። ገቢ ግን"
-            " 24 ሰዓት ይቻላል።"
+            "⏰ Withdrawals are available daily from 08:00 AM to 09:00 PM EAT. Deposits are open 24/7."
         ),
     })
   d = request.get_json(force=True)
@@ -1371,11 +1564,11 @@ def api_withdraw():
   )
   u = get_u(uid)
   if amt <= 0:
-    return jsonify({"ok": False, "msg": "ትክክለኛ የብር መጠን ያስገቡ።"})
+    return jsonify({"ok": False, "msg": "Please enter a valid withdrawal amount."})
   if amt > u["balance"]:
-    return jsonify({"ok": False, "msg": "በቂ ባላንስ የለዎትም።"})
+    return jsonify({"ok": False, "msg": "Insufficient balance."})
   if not dest:
-    return jsonify({"ok": False, "msg": "የአካውንት ቁጥር እና ሙሉ ስም ያስገቡ።"})
+    return jsonify({"ok": False, "msg": "Please enter your account number and full name."})
   u["balance"] = round(u["balance"] - amt, 2)
   wid = "WD-" + uuid.uuid4().hex[:6].upper()
   obj = {
@@ -1388,6 +1581,7 @@ def api_withdraw():
   }
   WITHDRAWALS[wid] = obj
   u["wds"].append(obj)
+  save_persistent_state()
   wd_text = (
       f"💸 Withdraw Request (Pending)\n"
       f"ID: {wid}\n"
@@ -1415,7 +1609,7 @@ def api_withdraw():
       "ok": True,
       "balance": u["balance"],
       "msg": (
-          f"⏳ የ {amt:.2f} ብር የወጪ ጥያቄዎ ({wid}) በመጠባበቅ ላይ (Pending) ነው፤ እስኪደርስዎ በሂደት ላይ ይቆያል።"
+          f"⏳ Your withdrawal request of {amt:.2f} ETB ({wid}) is Pending and will be processed shortly."
       ),
   })
 
@@ -1426,18 +1620,18 @@ def api_approve():
   wid = str(d.get("id", "")).strip()
   w = WITHDRAWALS.get(wid)
   if not w:
-    return jsonify({"ok": False, "msg": "ጥያቄው አልተገኘም።"}), 404
+    return jsonify({"ok": False, "msg": "Withdrawal request not found."}), 404
   w["status"] = "Completed"
   for item in get_u(w["uid"])["wds"]:
     if item["id"] == wid:
       item["status"] = "Completed"
+  save_persistent_state()
   tg(
       w["uid"],
-      f"✅ ተጠናቋል (Completed)! የ {w['amount']:.2f} ብር የወጪ ጥያቄዎ ({wid}) ተጠናቆ"
-      f" ወደ አካውንትዎ ({w['dest']}) ተልኳል።",
+      f"✅ Completed! Your withdrawal of {w['amount']:.2f} ETB ({wid}) has been sent to {w['dest']}.",
   )
   return jsonify(
-      {"ok": True, "msg": f"{wid} ተጠናቋል (Completed)፤ ለደንበኛው ተልኳል።"}
+      {"ok": True, "msg": f"{wid} marked as Completed and customer notified."}
   )
 
 
