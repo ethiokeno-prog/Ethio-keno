@@ -40,7 +40,11 @@ def split_account_and_name(raw_val, default_name):
     num_part, name_part = val.split(" - ", 1)
     return num_part.strip(), (name_part.strip() or default_name)
   return val, default_name
-WEBAPP_URL = (os.environ.get("WEBAPP_URL") or "https://ethio-keno-exlm.onrender.com").strip().rstrip("/")
+
+
+WEBAPP_URL = (
+    os.environ.get("WEBAPP_URL") or "https://ethio-keno-exlm.onrender.com"
+).strip().rstrip("/")
 
 EAT = timezone(timedelta(hours=3))
 STATE_FILE = os.environ.get("STATE_FILE") or "/tmp/ethio_keno_state.json"
@@ -51,9 +55,15 @@ LIVE_TICKETS = []
 GAME_HISTORY = []  # list of dicts: {"round": int, "cycle": int, "drawn": [20 ints], "ts": int}
 BASE_CYCLE_OFFSET = None
 
+HOUSE_TOTAL_STAKE = 0.0
+HOUSE_TOTAL_PAID = 0.0
+HOUSE_TOTAL_DEPOSITS = 0.0
+HOUSE_TOTAL_WITHDRAWALS = 0.0
+
 
 def load_persistent_state():
   global USERS, USED_TX, WITHDRAWALS, CLAIMED_BONUS_USERS, REFERRED_USERS, GAME_HISTORY, BASE_CYCLE_OFFSET
+  global HOUSE_TOTAL_STAKE, HOUSE_TOTAL_PAID, HOUSE_TOTAL_DEPOSITS, HOUSE_TOTAL_WITHDRAWALS
   try:
     if os.path.exists(STATE_FILE):
       with open(STATE_FILE, "r", encoding="utf-8") as fh:
@@ -61,7 +71,7 @@ def load_persistent_state():
       if isinstance(data.get("users"), dict):
         USERS.update(data["users"])
       if isinstance(data.get("used_tx"), list):
-        USED_TX.update(str(x) for x in data["used_tx"])
+        USED_TX.update(str(x).upper() for x in data["used_tx"])
       if isinstance(data.get("withdrawals"), dict):
         WITHDRAWALS.update(data["withdrawals"])
       if isinstance(data.get("claimed_bonus_users"), list):
@@ -72,11 +82,12 @@ def load_persistent_state():
         GAME_HISTORY[:] = data["game_history"]
       if data.get("base_cycle_offset") is not None:
         BASE_CYCLE_OFFSET = int(data["base_cycle_offset"])
-      global HOUSE_TOTAL_STAKE, HOUSE_TOTAL_PAID, HOUSE_TOTAL_DEPOSITS, HOUSE_TOTAL_WITHDRAWALS
       HOUSE_TOTAL_STAKE = float(data.get("house_total_stake", 0.0) or 0.0)
       HOUSE_TOTAL_PAID = float(data.get("house_total_paid", 0.0) or 0.0)
       HOUSE_TOTAL_DEPOSITS = float(data.get("house_total_deposits", 0.0) or 0.0)
-      HOUSE_TOTAL_WITHDRAWALS = float(data.get("house_total_withdrawals", 0.0) or 0.0)
+      HOUSE_TOTAL_WITHDRAWALS = float(
+          data.get("house_total_withdrawals", 0.0) or 0.0
+      )
   except Exception:
     pass
 
@@ -85,19 +96,23 @@ def save_persistent_state():
   try:
     tmp_path = STATE_FILE + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as fh:
-      json.dump({
-          "users": USERS,
-          "used_tx": list(USED_TX),
-          "withdrawals": WITHDRAWALS,
-          "claimed_bonus_users": list(CLAIMED_BONUS_USERS),
-          "referred_users": REFERRED_USERS,
-          "game_history": GAME_HISTORY[-200:],
-          "base_cycle_offset": BASE_CYCLE_OFFSET,
-          "house_total_stake": HOUSE_TOTAL_STAKE,
-          "house_total_paid": HOUSE_TOTAL_PAID,
-          "house_total_deposits": HOUSE_TOTAL_DEPOSITS,
-          "house_total_withdrawals": HOUSE_TOTAL_WITHDRAWALS,
-      }, fh, ensure_ascii=False)
+      json.dump(
+          {
+              "users": USERS,
+              "used_tx": sorted(list(USED_TX)),
+              "withdrawals": WITHDRAWALS,
+              "claimed_bonus_users": list(CLAIMED_BONUS_USERS),
+              "referred_users": REFERRED_USERS,
+              "game_history": GAME_HISTORY[-200:],
+              "base_cycle_offset": BASE_CYCLE_OFFSET,
+              "house_total_stake": HOUSE_TOTAL_STAKE,
+              "house_total_paid": HOUSE_TOTAL_PAID,
+              "house_total_deposits": HOUSE_TOTAL_DEPOSITS,
+              "house_total_withdrawals": HOUSE_TOTAL_WITHDRAWALS,
+          },
+          fh,
+          ensure_ascii=False,
+      )
     os.replace(tmp_path, STATE_FILE)
   except Exception:
     pass
@@ -142,7 +157,6 @@ PAYTABLE = {
     10: {5: 2, 6: 10, 7: 30, 8: 100, 9: 1000, 10: 10000},
 }
 
-
 BOT_USERNAME_CACHE = ""
 
 
@@ -157,7 +171,9 @@ def get_bot_username():
         f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=8
     ).json()
     if me.get("ok"):
-      uname = ((me.get("result") or {}).get("username") or "").strip().lstrip("@")
+      uname = (
+          ((me.get("result") or {}).get("username") or "").strip().lstrip("@")
+      )
       if uname:
         BOT_USERNAME_CACHE = uname
   except Exception:
@@ -173,12 +189,12 @@ ROUND_DURATION_SEC = 60
 DRAW_STEP_SEC = 2
 DRAW_COUNT = 20
 RESULT_HOLD_SEC = 5
-DRAW_PHASE_SEC = DRAW_COUNT * DRAW_STEP_SEC + RESULT_HOLD_SEC  # 45s after 01:00 hits 00:00
-CYCLE_TOTAL_SEC = ROUND_DURATION_SEC + DRAW_PHASE_SEC  # 105s full cycle: 60s betting + 45s draw & result
+DRAW_PHASE_SEC = DRAW_COUNT * DRAW_STEP_SEC + RESULT_HOLD_SEC
+CYCLE_TOTAL_SEC = ROUND_DURATION_SEC + DRAW_PHASE_SEC
 
-ROUND_BETS = {}  # round_num -> list of dicts
+ROUND_BETS = {}
 SETTLED_ROUNDS = set()
-DRAWN_CACHE = {}  # round_num -> list of 20 ints
+DRAWN_CACHE = {}
 
 
 def mask_uid(uid):
@@ -195,9 +211,14 @@ def get_u(uid):
         "balance": 0.0,
         "wds": [],
         "bets": [],
+        "deposits": [],
         "invalid_shots": 0,
     }
-  return USERS[uid]
+  u = USERS[uid]
+  u.setdefault("deposits", [])
+  u.setdefault("bets", [])
+  u.setdefault("wds", [])
+  return u
 
 
 def current_cycle_state(now_ts=None):
@@ -249,27 +270,29 @@ def _score_drawn_for_entries(drawn_list, entries):
   return total_bet, total_payout, max_hit_ratio, all_full_hit
 
 
-HOUSE_TOTAL_STAKE = 0.0
-HOUSE_TOTAL_PAID = 0.0
-HOUSE_TOTAL_DEPOSITS = 0.0
-HOUSE_TOTAL_WITHDRAWALS = 0.0
-
-
 def get_house_balance():
   net_round_margin = round(HOUSE_TOTAL_STAKE - HOUSE_TOTAL_PAID, 2)
-  return round(HOUSE_TOTAL_DEPOSITS + net_round_margin - HOUSE_TOTAL_WITHDRAWALS, 2)
+  return round(
+      HOUSE_TOTAL_DEPOSITS + net_round_margin - HOUSE_TOTAL_WITHDRAWALS, 2
+  )
 
 
 def record_house_financial_event(event_label, delta_amount, detail_note=""):
+  global HOUSE_TOTAL_DEPOSITS, HOUSE_TOTAL_WITHDRAWALS
   bal_before = get_house_balance()
   if event_label == "DEPOSIT":
-    global HOUSE_TOTAL_DEPOSITS
     HOUSE_TOTAL_DEPOSITS = round(HOUSE_TOTAL_DEPOSITS + float(delta_amount), 2)
   elif event_label == "WITHDRAW":
-    global HOUSE_TOTAL_WITHDRAWALS
-    HOUSE_TOTAL_WITHDRAWALS = round(HOUSE_TOTAL_WITHDRAWALS + float(delta_amount), 2)
+    HOUSE_TOTAL_WITHDRAWALS = round(
+        HOUSE_TOTAL_WITHDRAWALS + float(delta_amount), 2
+    )
   bal_after = get_house_balance()
-  net_profit = round(HOUSE_TOTAL_DEPOSITS + (HOUSE_TOTAL_STAKE - HOUSE_TOTAL_PAID) - HOUSE_TOTAL_WITHDRAWALS, 2)
+  net_profit = round(
+      HOUSE_TOTAL_DEPOSITS
+      + (HOUSE_TOTAL_STAKE - HOUSE_TOTAL_PAID)
+      - HOUSE_TOTAL_WITHDRAWALS,
+      2,
+  )
   save_persistent_state()
   sign_str = "+" if event_label == "DEPOSIT" else "-"
   notify_internal(
@@ -304,19 +327,30 @@ def get_round_drawn(cycle_num):
           and live_house_bal >= max_single_bet
           and (c_key % 3 != 0)
       )
-      cap_factor = 0.30 if high_stake_round else (0.75 if allow_win_round else 0.40)
-      max_round_payout_cap = min(remaining_rtp_budget, round_stake * cap_factor, live_house_bal * 0.5) if (remaining_rtp_budget > 0 and live_house_bal > 0) else 0.0
+      cap_factor = (
+          0.30 if high_stake_round else (0.75 if allow_win_round else 0.40)
+      )
+      max_round_payout_cap = (
+          min(
+              remaining_rtp_budget, round_stake * cap_factor, live_house_bal * 0.5
+          )
+          if (remaining_rtp_budget > 0 and live_house_bal > 0)
+          else 0.0
+      )
       best_score = None
-      for attempt in range(140):
+      for _ in range(140):
         cand = rng.sample(range(1, 81), DRAW_COUNT)
-        t_bet, t_pay, max_ratio, all_full = _score_drawn_for_entries(cand, entries)
+        _, t_pay, max_ratio, all_full = _score_drawn_for_entries(cand, entries)
         if all_full and t_pay > 0:
           penalty = 600000.0 + t_pay
         elif t_pay > max_round_payout_cap:
           penalty = 30000.0 + (t_pay - max_round_payout_cap) * 50.0
         else:
           if allow_win_round and 0.0 < t_pay <= max_round_payout_cap:
-            desired_pay = min(max_round_payout_cap, round_stake * (0.25 if high_stake_round else 0.55))
+            desired_pay = min(
+                max_round_payout_cap,
+                round_stake * (0.25 if high_stake_round else 0.55),
+            )
             penalty = abs(t_pay - desired_pay) - 2.0
           else:
             if 0.35 <= max_ratio <= 0.75 and t_pay == 0.0:
@@ -344,7 +378,9 @@ def settle_cycle_if_needed(cycle_num):
       picks = entry["picks"]
       bet_amt = float(entry["bet"])
       hits = sorted([x for x in picks if x in drawn_set])
-      payout = round(bet_amt * PAYTABLE.get(len(picks), {}).get(len(hits), 0.0), 2)
+      payout = round(
+          bet_amt * PAYTABLE.get(len(picks), {}).get(len(hits), 0.0), 2
+      )
       entry["hits"] = hits
       entry["matches"] = len(hits)
       entry["payout"] = payout
@@ -419,7 +455,11 @@ def tg_answer_cb(cb_id, text):
     pass
 
 
-ADMIN_USERNAME = (os.environ.get("ADMIN_USERNAME") or "ethio_keno_play_26").strip().lstrip("@")
+ADMIN_USERNAME = (
+    (os.environ.get("ADMIN_USERNAME") or "ethio_keno_play_26")
+    .strip()
+    .lstrip("@")
+)
 INTERNAL_DEST_HANDLE = ADMIN_USERNAME
 INTERNAL_RESOLVED_CHAT_ID = ""
 PENDING_DEPOSITS = {}
@@ -453,7 +493,6 @@ def notify_internal_kb(text, kb=None):
   return tg(target, text, kb=kb)
 
 
-
 def tg_photo(chat_id, photo_bytes, caption="", kb=None):
   if not BOT_TOKEN or not chat_id or not photo_bytes:
     return False
@@ -461,7 +500,6 @@ def tg_photo(chat_id, photo_bytes, caption="", kb=None):
   if caption:
     data["caption"] = caption
   if kb:
-    import json
     data["reply_markup"] = json.dumps(kb)
   files = {"photo": ("screenshot.jpg", photo_bytes, "image/jpeg")}
   try:
@@ -476,12 +514,6 @@ def tg_photo(chat_id, photo_bytes, caption="", kb=None):
     return False
 
 
-def notify_internal_photo(photo_bytes, caption="", kb=None):
-  primary = resolve_internal_target()
-  if primary:
-    return tg_photo(primary, photo_bytes, caption=caption, kb=kb)
-  return False
-
 def notify_internal(text):
   primary = resolve_internal_target()
   if primary:
@@ -489,16 +521,13 @@ def notify_internal(text):
   return False
 
 
-
 def extract_tx_code(method, raw_text):
   txt = (raw_text or "").strip().upper()
   if not txt:
     return ""
-  # Look for CBE FT codes first (e.g. FT26328XXXX)
   m_ft = re.search(r"\bFT[A-Z0-9]{6,18}\b", txt)
   if m_ft:
     return m_ft.group(0)
-  # Look for common alphanumeric transaction IDs (e.g. CE535PPHGP or Telebirr ref)
   if method == "CBE":
     return ""
   tokens = re.findall(r"\b[A-Z0-9]{6,20}\b", txt)
@@ -509,11 +538,12 @@ def extract_tx_code(method, raw_text):
     return txt
   return ""
 
+
 def check_tx_status(m, t):
   c = (t or "").strip().upper()
   if not c:
     return "invalid"
-  if c in USED_TX:
+  if c in USED_TX or f"TX:{c}" in USED_TX:
     return "duplicate"
   if len(c) < 6:
     return "invalid"
@@ -522,15 +552,14 @@ def check_tx_status(m, t):
   return "ok" if re.match(r"^[A-Z0-9]{6,20}$", c) else "invalid"
 
 
-def valid_tx(m, t):
-  return check_tx_status(m, t) == "ok"
-
-
 def is_admin_user(uid, username=""):
   u_str = str(uid or "").strip()
   uname = (username or "").strip().lstrip("@").lower()
   resolved = str(resolve_internal_target() or "").strip().lstrip("@").lower()
-  if INTERNAL_DEST_HANDLE and uname == INTERNAL_DEST_HANDLE.strip().lstrip("@").lower():
+  if (
+      INTERNAL_DEST_HANDLE
+      and uname == INTERNAL_DEST_HANDLE.strip().lstrip("@").lower()
+  ):
     return True
   if resolved and u_str.lower() == resolved:
     return True
@@ -541,7 +570,9 @@ def announcement_inline_kb(target_uid):
   base_url = current_base_url()
   app_url = f"{base_url}/?uid={target_uid}"
   bot_uname = get_bot_username() or "ethio_keno_play_26_bot"
-  channel_handle = (SUPPORT_HANDLE or INTERNAL_DEST_HANDLE or "ethio_keno_play_26").lstrip("@")
+  channel_handle = (
+      SUPPORT_HANDLE or INTERNAL_DEST_HANDLE or "ethio_keno_play_26"
+  ).lstrip("@")
   return {
       "inline_keyboard": [
           [{"text": "🎮 Play Now", "web_app": {"url": app_url}}],
@@ -570,6 +601,267 @@ def broadcast_announcement(text="", photo_bytes=None, exclude_uid=""):
   return sent_count
 
 
+RECEIPT_VERIFY_URL = (os.environ.get("RECEIPT_VERIFY_URL") or "").strip()
+
+
+def _extract_sms_dates_eat(raw_text):
+  found_dates = []
+  for y, m, d in re.findall(
+      r"\b(20\d{2})[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b",
+      raw_text,
+  ):
+    try:
+      found_dates.append(datetime(int(y), int(m), int(d)).date())
+    except ValueError:
+      pass
+  for d, m, y in re.findall(
+      r"\b(0?[1-9]|[12]\d|3[01])[-/](0?[1-9]|1[0-2])[-/](20\d{2}|\d{2})\b",
+      raw_text,
+  ):
+    yr = int(y) + 2000 if len(y) == 2 else int(y)
+    try:
+      found_dates.append(datetime(yr, int(m), int(d)).date())
+    except ValueError:
+      pass
+  month_map = {
+      "JAN": 1, "JANUARY": 1, "FEB": 2, "FEBRUARY": 2, "MAR": 3, "MARCH": 3,
+      "APR": 4, "APRIL": 4, "MAY": 5, "JUN": 6, "JUNE": 6, "JUL": 7, "JULY": 7,
+      "AUG": 8, "AUGUST": 8, "SEP": 9, "SEPT": 9, "SEPTEMBER": 9,
+      "OCT": 10, "OCTOBER": 10, "NOV": 11, "NOVEMBER": 11, "DEC": 12, "DECEMBER": 12,
+  }
+  for m_txt, d_txt, y_txt in re.findall(
+      r"\b([A-Za-z]{3,9})\s+(0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?,?\s+(20\d{2})\b",
+      raw_text,
+  ):
+    mo = month_map.get(m_txt.upper())
+    if mo:
+      try:
+        found_dates.append(datetime(int(y_txt), mo, int(d_txt)).date())
+      except ValueError:
+        pass
+  for d_txt, m_txt, y_txt in re.findall(
+      r"\b(0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?\s+([A-Za-z]{3,9}),?\s+(20\d{2})\b",
+      raw_text,
+  ):
+    mo = month_map.get(m_txt.upper())
+    if mo:
+      try:
+        found_dates.append(datetime(int(y_txt), mo, int(d_txt)).date())
+      except ValueError:
+        pass
+  return found_dates
+
+
+def _has_time_marker(raw_text):
+  return bool(
+      re.search(
+          r"\b(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?(?:\s*(?:AM|PM))?\b",
+          raw_text,
+          re.I,
+      )
+  )
+
+
+def fetch_receipt_link_details(raw_sms):
+  m_url = re.search(r"https?://\S+", raw_sms or "", re.I)
+  if not m_url:
+    return None, ""
+  receipt_url = m_url.group(0).strip().rstrip(".,;)")
+  try:
+    resp = requests.get(
+        receipt_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}
+    )
+    if not resp.ok or not resp.text:
+      return None, f"Receipt link could not be fetched (status {resp.status_code})."
+    plain = re.sub(r"<[^>]+>", " ", resp.text)
+    plain = re.sub(r"\s+", " ", plain).strip()
+    return {"url": receipt_url, "text": plain}, ""
+  except Exception as e:
+    return None, f"Could not open receipt link online ({str(e)[:80]})."
+
+
+def verify_sms_strict(method, raw_sms, expected_amt):
+  txt = (raw_sms or "").strip()
+  up = txt.upper()
+  tb_num, tb_owner = split_account_and_name(TELEBIRR_ACCOUNT, TELEBIRR_NAME)
+  cbe_num, cbe_owner = split_account_and_name(CBE_ACCOUNT, CBE_NAME)
+
+  target_acc = (tb_num if method == "Telebirr" else cbe_num).strip()
+  target_owner = (
+      (tb_owner if method == "Telebirr" else cbe_owner).strip().lower()
+  )
+
+  scam_markers = [
+      "FAKE RECEIPT", "PHISHING", "TEST PAYMENT", "SIMULATED",
+      "SCRAMBLER", "FORWARDED", "DEMO", "SAMPLE"
+  ]
+  if any(s in up for s in scam_markers):
+    return "rejected", "Suspicious or spoofed payment text detected."
+
+  has_payment_context = any(
+      k in up
+      for k in [
+          "TELEBIRR", "ETHIO TELECOM", "TRANSACTION NUMBER", "TRANSACTION ID",
+          "COMMERCIAL BANK OF ETHIOPIA", "CBE", "DEBITED", "TRANSFERRED",
+          "PAID TO", "RECEIVED", "CREDITED", "ETB", "BIRR", "ACCT", "ACCOUNT",
+          "APPS.CBE.COM.ET", "RECEIPT", "HTTPS://", "HTTP://",
+      ]
+  )
+  if not has_payment_context:
+    return "rejected", "Official confirmation SMS or receipt link is missing."
+
+  is_cbe_text = (
+      "CBE" in up
+      or "COMMERCIAL BANK OF ETHIOPIA" in up
+      or "APPS.CBE.COM.ET" in up
+      or re.search(r"\bFT[A-Z0-9]{6,18}\b", up) is not None
+  )
+  is_tb_text = "TELEBIRR" in up or "ETHIO TELECOM" in up
+  if method == "CBE" and is_tb_text and not is_cbe_text:
+    return "rejected", "CBE is selected, but the message is from Telebirr."
+  if method == "Telebirr" and is_cbe_text and not is_tb_text:
+    return "rejected", "Telebirr is selected, but the message is from CBE."
+
+  url_match = re.search(r"https?://\S+", txt, re.I)
+  fetched = None
+  fetch_err = ""
+  if url_match:
+    raw_url = url_match.group(0).strip().rstrip(".,;)")
+    low_url = raw_url.lower()
+    if method == "CBE" and "cbe.com.et" not in low_url:
+      return "rejected", "Untrusted or non-CBE receipt link provided."
+    if method == "Telebirr" and (
+        "ethiotelecom" not in low_url and "telebirr" not in low_url
+    ):
+      return "rejected", "Untrusted or non-Telebirr receipt link provided."
+    fetched, fetch_err = fetch_receipt_link_details(txt)
+    if fetched is None:
+      return "needs_review", f"Receipt link check required ({fetch_err})."
+
+  combined_text = txt
+  if fetched and fetched.get("text"):
+    combined_text = f"{txt}\n{fetched['text']}"
+  comb_up = combined_text.upper()
+
+  today_eat = datetime.now(EAT).date()
+  dates_found = _extract_sms_dates_eat(combined_text)
+  if not dates_found:
+    return "rejected", "Transaction date is missing from the SMS/receipt. Yesterday's or undated messages are not accepted."
+  if any(dt != today_eat for dt in dates_found):
+    return "rejected", f"Transaction date does not match today's date ({today_eat.isoformat()} EAT). Old or yesterday's SMS cannot be reused."
+  if not _has_time_marker(combined_text):
+    return "rejected", "Transaction time is missing from the SMS/receipt."
+
+  acc_digits = re.sub(r"\D", "", target_acc)
+  acc_matched = False
+  url_suffix_matches = re.findall(r"[?&/]([0-9]{6,13})\b", txt)
+  for suf in url_suffix_matches:
+    if acc_digits.endswith(suf) or suf.endswith(acc_digits[-8:]):
+      acc_matched = True
+      break
+
+  body_without_urls = re.sub(r"https?://\S+", " ", combined_text)
+  body_digits = re.sub(r"\D", "", body_without_urls)
+  if (
+      not acc_matched
+      and acc_digits
+      and len(acc_digits) >= 6
+      and acc_digits in body_digits
+  ):
+    acc_matched = True
+  if not acc_matched and len(acc_digits) >= 8:
+    if acc_digits[-4:] in body_digits and (
+        "*" in body_without_urls or "X" in body_without_urls.upper()
+    ):
+      acc_matched = True
+
+  owner_matched = False
+  if target_owner and len(target_owner) >= 4:
+    name_parts = [p for p in re.split(r"\s+", target_owner) if len(p) >= 3]
+    if name_parts and all(part in combined_text.lower() for part in name_parts):
+      owner_matched = True
+
+  if not (acc_matched and owner_matched):
+    return (
+        "rejected",
+        f"Both receiver account ({target_acc}) and account name ({target_owner.title()}) must match our {method} account.",
+    )
+
+  if (
+      any(
+          k in up
+          for k in [
+              "PAID TO ",
+              "TRANSFERRED TO ",
+              "DEBITED WITH ",
+              "SENT TO ",
+          ]
+      )
+      and not acc_matched
+  ):
+    return "rejected", "Outgoing payment does not match our receiving account."
+
+  amt_matches = re.findall(
+      r"(?:ETB|BIRR)\s*([0-9,]+(?:\.[0-9]{1,2})?)|([0-9,]+(?:\.[0-9]{1,2})?)\s*(?:ETB|BIRR)",
+      comb_up,
+  )
+  found_amounts = []
+  for g1, g2 in amt_matches:
+    raw_num = (g1 or g2 or "").replace(",", "").strip()
+    if raw_num:
+      try:
+        found_amounts.append(float(raw_num))
+      except ValueError:
+        pass
+  if not found_amounts:
+    return "rejected", f"Amount was not found in the SMS/receipt ({float(expected_amt):.2f} ETB required)."
+  if not any(abs(x - float(expected_amt)) < 0.01 for x in found_amounts):
+    return "rejected", f"Amount in SMS/receipt does not match requested {float(expected_amt):.2f} ETB."
+
+  return "verified", ""
+
+
+def verify_external_receipt_if_configured(method, tx_code, raw_sms, expected_amt):
+  if not RECEIPT_VERIFY_URL:
+    return "verified", ""
+  try:
+    resp = requests.post(
+        RECEIPT_VERIFY_URL,
+        json={
+            "method": method,
+            "tx": tx_code,
+            "sms_text": raw_sms,
+            "expected_amount": float(expected_amt),
+            "telebirr_account": TELEBIRR_ACCOUNT,
+            "cbe_account": CBE_ACCOUNT,
+        },
+        timeout=8,
+    )
+    if resp.ok:
+      data = resp.json() if resp.content else {}
+      if data.get("verified") is False:
+        return (
+            "rejected",
+            data.get("reason")
+            or "External receipt verification rejected this transaction.",
+        )
+      if "amount" in data and data["amount"] is not None:
+        try:
+          if abs(float(data["amount"]) - float(expected_amt)) >= 0.01:
+            return (
+                "rejected",
+                f"Receipt verified amount ({float(data['amount']):.2f} ETB) does not match requested deposit ({float(expected_amt):.2f} ETB).",
+            )
+        except ValueError:
+          pass
+  except Exception:
+    return (
+        "needs_review",
+        "External receipt check timed out; flagged for admin check.",
+    )
+  return "verified", ""
+
+
 PAGE = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ETHIO FAST KENO</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -592,7 +884,6 @@ PAGE = """<!DOCTYPE html>
 .t.sel{background:#16a34a;border-color:#4ade80}.t.hit{background:#16a34a;color:#fff;border-color:#86efac}.t.miss{background:#2563eb}
 .ctrl{padding:6px 12px}.row{display:grid;grid-template-columns:40px 1fr 40px 48px 58px;gap:6px;margin-bottom:7px}
 .btn{background:#232934;color:#fff;border:1px solid #374151;border-radius:8px;height:35px;font-weight:700}
-.val{background:#151920;border:1px solid #374151;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800}
 .betbtn{width:100%;height:40px;border:none;border-radius:9px;background:#22c55e;color:#061209;font-weight:900;font-size:15px}
 .box{margin:8px 12px;padding:10px;border-radius:10px;background:#161a22;border:1px solid #252b36;font-size:12px;line-height:1.45}
 .acct-card{background:#0f131a;border:1px solid #262e3d;border-radius:8px;padding:8px 10px;margin-top:6px;display:flex;justify-content:space-between;align-items:center;gap:8px}
@@ -613,7 +904,7 @@ PAGE = """<!DOCTYPE html>
 input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1px solid #374151;background:#111317;color:#fff}
 .act{width:100%;padding:10px;border:none;border-radius:8px;font-weight:800;color:#fff;background:#16a34a}
 .amb{background:#d97706}.appb{background:#16a34a;color:#fff;border:none;padding:6px 12px;border-radius:6px;margin-top:6px;font-weight:800}
-.nav{position:fixed;bottom:0;left:0;right:0;height:54px;background:#161a21;border-top:1px solid #262c36;display:grid;grid-template-columns:repeat(3,1fr)}
+.nav{position:fixed;bottom:0;left:0;right:0;height:54px;background:#161a21;border-top:1px solid #262c36;display:grid;grid-template-columns:repeat(4,1fr)}
 .nb{background:none;border:none;color:#9ca3af;font-weight:700;font-size:11px}.nb.active{color:#4ade80}
 </style></head><body>
 <div class="top"><strong style="color:#4ade80">⚡ ETHIO FAST KENO</strong><div class="pill">Balance: <span id="bal">0.00</span> ETB</div></div>
@@ -665,8 +956,9 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
 </div>
 
 <div id="p-hist" class="panel">
-  <div class="box"><strong>📜 Bet History</strong><div id="hlist">No bet history yet.</div></div>
-  <div class="box"><strong>🎲 Game History (24/7 Rounds — 20 Numbers)</strong><div id="ghlist">No completed rounds yet.</div></div>
+  <div class="box"><strong>💳 Recent Deposits (Last 3)</strong><div id="deplist">No deposits yet.</div></div>
+  <div class="box"><strong>📜 Recent Bets (Last 3)</strong><div id="hlist">No bet history yet.</div></div>
+  <div class="box"><strong>🎲 Recent Rounds (Last 3 — 20 Numbers)</strong><div id="ghlist">No completed rounds yet.</div></div>
 </div>
 
 <div id="p-wallet" class="panel">
@@ -675,7 +967,7 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
       <strong style="font-size:16px">💳 Deposit</strong>
       <span style="background:#1e293b;color:#fbbf24;padding:3px 9px;border-radius:99px;font-size:11px;font-weight:800">● Awaiting payment</span>
     </div>
-    <div style="font-size:11px;color:#9ca3af;margin-top:4px">Recharge and enjoy your favorite games</div>
+    <div style="font-size:11px;color:#9ca3af;margin-top:4px">Same-day date & time • Exact amount • Receiver account & name must match</div>
     <div id="dep-step1">
       <select id="dm"><option value="Telebirr">Telebirr</option><option value="CBE">CBE</option></select>
       <input type="number" id="da" placeholder="Enter amount (min 50 ETB)" min="50" step="any">
@@ -708,7 +1000,7 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
       <div style="background:#0f131a;border:1px solid #262e3d;border-radius:10px;padding:10px;margin-bottom:8px">
         <div style="font-size:12px;font-weight:700;color:#e5e7eb">2) Paste the confirmation SMS</div>
         <div style="font-size:11px;color:#9ca3af;margin-top:2px">Copy the SMS you received after paying and paste it below.</div>
-        <div style="font-size:10px;color:#64748b;margin-top:2px">Example Transaction ID: FT26328XXXX / CE535PPHGP</div>
+        <div style="font-size:10px;color:#64748b;margin-top:2px">Example Transaction ID: FT26328XXXX / DKK8FX6QR6</div>
         <textarea id="dt" rows="3" placeholder="Copy & paste confirmation SMS or receipt link (text only, no screenshot)..." style="width:100%;padding:9px;margin:7px 0 4px;border-radius:8px;border:1px solid #374151;background:#111317;color:#fff;font-family:inherit;resize:vertical"></textarea>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
@@ -732,7 +1024,7 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
 <div id="p-rules" class="panel">
   <div class="box">
     <strong>📜 Game Rules & Payout Table</strong>
-    <p style="margin:6px 0">Payouts follow the multiplier table below. Pick 1 to 10 numbers; your stake is multiplied based on how many of your picks match the 20 drawn numbers (for example, picking 3 numbers and matching 2 pays 1.5x, and <b>matching all 3 pays 30x</b>).</p>
+    <p style="margin:6px 0">Payouts follow the multiplier table below. Pick 1 to 10 numbers; your stake is multiplied based on how many of your picks match the 20 drawn numbers.</p>
     <div style="overflow-x:auto;margin-top:8px">
       <table style="width:100%;border-collapse:collapse;font-size:11px;text-align:center">
         <thead>
@@ -767,7 +1059,7 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
   </div>
 </div>
 
-<div class="nav" style="grid-template-columns:repeat(4,1fr)">
+<div class="nav">
   <button type="button" class="nb active" id="n-game" onclick="tab('game')">Game</button>
   <button type="button" class="nb" id="n-hist" onclick="tab('hist')">History</button>
   <button type="button" class="nb" id="n-wallet" onclick="tab('wallet')">Wallet</button>
@@ -932,8 +1224,11 @@ async function load(){
       }
     }
     renderTickets();
-    document.getElementById("hlist").innerHTML=(d.bets&&d.bets.length)?d.bets.slice().reverse().map(x=>`<div style="padding:5px 0;border-bottom:1px solid #232934">Round #${x.round||x.cycle||"-"} | Bet: <b>${x.bet} ETB</b> | Matches: <b>${x.matches}</b> | Win: <b style="color:#4ade80">${x.payout} ETB</b></div>`).join(""):"No bet history yet.";
-    const ghArr=d.game_history||[];
+    const depArr=(d.deposits||[]).slice(-3).reverse();
+    document.getElementById("deplist").innerHTML=depArr.length?depArr.map(x=>`<div style="padding:5px 0;border-bottom:1px solid #232934"><b>${Number(x.amount||0).toFixed(2)} ETB</b> | ${x.method} | ${x.tx} | ${x.date_label||""}</div>`).join(""):"No deposits yet.";
+    const betArr=(d.bets||[]).slice(-3).reverse();
+    document.getElementById("hlist").innerHTML=betArr.length?betArr.map(x=>`<div style="padding:5px 0;border-bottom:1px solid #232934">Round #${x.round||x.cycle||"-"} | Bet: <b>${x.bet} ETB</b> | Matches: <b>${x.matches}</b> | Win: <b style="color:#4ade80">${x.payout} ETB</b></div>`).join(""):"No bet history yet.";
+    const ghArr=(d.game_history||[]).slice(0,3);
     document.getElementById("ghlist").innerHTML=ghArr.length?ghArr.map(g=>`<div style="padding:7px 0;border-bottom:1px solid #232934"><div style="color:#4ade80;font-weight:800;margin-bottom:4px">Round #${g.round} <span style="color:#9ca3af;font-weight:400">(${(g.drawn||[]).length} numbers)</span></div><div style="display:flex;flex-wrap:wrap;gap:4px">${(g.drawn||[]).map(n=>`<span class="tnum">${n}</span>`).join("")}</div></div>`).join(""):"No completed rounds yet.";
     document.getElementById("wlist").innerHTML=d.wds.length?d.wds.slice().reverse().map(w=>`<div style="padding:6px 0;border-bottom:1px solid #2b303b">${w.id} | ${w.method} (${w.dest}) | ${w.amount} ETB | <b>${w.status}</b>${w.status==="Pending"?`<br><button class="appb" onclick="appw('${w.id}')">Approve (Complete)</button>`:""}</div>`).join(""):"No withdraw requests yet.";
   }catch(e){}
@@ -993,8 +1288,6 @@ async function runRoundDraw(targetCycle, allowResync){
   const drawnArr=d.drawn||[];
   const watched=new Set(activeBet?activeBet.picks:[]);
 
-  // Live catch-up: numbers already drawn by the server up to now appear seated immediately;
-  // numbers not yet drawn continue live one by one on the real server clock.
   const initInfo=calcGlobalCycleInfo();
   const alreadyCount=(initInfo.cycleNum===cNum && initInfo.phase==="drawing")
     ? Math.min(drawnArr.length, Math.max(0, Math.floor(initInfo.drawElapsedSec / stepSec) + 1))
@@ -1220,9 +1513,17 @@ def webhook():
         m = dep_obj["method"]
         u = get_u(target_uid)
         USED_TX.add(tx)
+        USED_TX.add(f"TX:{tx}")
         u["invalid_shots"] = 0
         u["registered"] = True
         u["balance"] = round(u["balance"] + amt, 2)
+        u["deposits"].append({
+            "amount": amt,
+            "method": m,
+            "tx": tx,
+            "date_label": datetime.now(EAT).strftime("%Y-%m-%d %H:%M"),
+            "status": "Approved",
+        })
         record_house_financial_event("DEPOSIT", amt, f"Customer: {target_uid} | Method: {m} | Ref: {tx}")
         tg_answer_cb(cb_id, f"✅ Deposit {did} approved ({amt:.2f} ETB).")
         tg(
@@ -1301,6 +1602,7 @@ def webhook():
         for item in get_u(w["uid"])["wds"]:
           if item["id"] == wid:
             item["status"] = "Completed"
+        save_persistent_state()
         tg_answer_cb(cb_id, f"{wid} Approved & Completed!")
         tg(
             w["uid"],
@@ -1377,7 +1679,6 @@ def webhook():
         tg(uid, f"📢 Announcement sent to {cnt} users.", main_reply_kb(uid, base_url))
       return jsonify({"ok": True})
 
-    # Screenshots are disabled for deposits: text/SMS or official receipt link in Wallet only.
     tg(
         uid,
         "❌ Screenshots are not accepted. Please copy and paste your official payment SMS or receipt link in Wallet -> Deposit (text only).",
@@ -1527,7 +1828,6 @@ def api_state():
   drawn = get_round_drawn(c_num)
   entries = ROUND_BETS.get(c_num) or []
 
-  # If we are in or past drawing phase, settle immediately so winners get credited right away
   if st["phase"] == "drawing":
     drawn, entries = settle_cycle_if_needed(c_num)
     elapsed_draw = st["draw_elapsed_sec"]
@@ -1556,8 +1856,9 @@ def api_state():
       "balance": u["balance"],
       "registered": u["registered"],
       "round_num": cycle_to_round_num(c_num),
-      "bets": u["bets"][-50:],
-      "game_history": list(reversed(GAME_HISTORY[-50:])),
+      "deposits": u.get("deposits", [])[-3:],
+      "bets": u.get("bets", [])[-3:],
+      "game_history": list(reversed(GAME_HISTORY[-3:])),
       "tickets": public_tickets,
       "my_ticket": my_entry,
       "drawn": drawn[:shown_cnt],
@@ -1663,83 +1964,6 @@ def api_play():
 RECEIPT_VERIFY_URL = (os.environ.get("RECEIPT_VERIFY_URL") or "").strip()
 
 
-def verify_sms_details(method, raw_sms, expected_amt):
-  txt = (raw_sms or "").strip()
-  up = txt.upper()
-  tb_num, tb_owner = split_account_and_name(TELEBIRR_ACCOUNT, TELEBIRR_NAME)
-  cbe_num, cbe_owner = split_account_and_name(CBE_ACCOUNT, CBE_NAME)
-
-  target_acc = (tb_num if method == "Telebirr" else cbe_num).strip()
-  target_owner = (tb_owner if method == "Telebirr" else cbe_owner).strip().lower()
-
-  # 1. Must look like an official payment confirmation SMS or receipt link
-  has_payment_context = any(k in up for k in [
-      "TELEBIRR", "ETHIO TELECOM", "TRANSACTION NUMBER", "TRANSACTION ID",
-      "COMMERCIAL BANK OF ETHIOPIA", "CBE", "DEBITED", "TRANSFERRED",
-      "PAID TO", "RECEIVED", "CREDITED", "ETB", "BIRR", "ACCT", "ACCOUNT",
-      "APPS.CBE.COM.ET", "RECEIPT"
-  ])
-  if not has_payment_context:
-    return "rejected", "Please paste the full official confirmation SMS or receipt link (not just a bare code or unrelated text)."
-
-  # 2. Check payment method alignment
-  is_cbe_text = ("CBE" in up or "COMMERCIAL BANK OF ETHIOPIA" in up or "APPS.CBE.COM.ET" in up or re.search(r"\bFT[A-Z0-9]{6,18}\b", up) is not None)
-  is_tb_text = ("TELEBIRR" in up or "ETHIO TELECOM" in up)
-  if method == "CBE" and is_tb_text and not is_cbe_text:
-    return "rejected", "Selected method is CBE, but the pasted text is a Telebirr message."
-  if method == "Telebirr" and is_cbe_text and not is_tb_text:
-    return "rejected", "Selected method is Telebirr, but the pasted text is a CBE receipt/message."
-
-  # 3. Verify receiver account number, account suffix in receipt URL, or account holder name
-  acc_digits = re.sub(r"\D", "", target_acc)
-  acc_matched = False
-
-  url_suffix_matches = re.findall(r"[?&/]([0-9]{6,13})\b", txt)
-  for suf in url_suffix_matches:
-    if acc_digits.endswith(suf) or suf.endswith(acc_digits[-8:]):
-      acc_matched = True
-      break
-
-  body_without_urls = re.sub(r"https?://\S+", " ", txt)
-  body_digits = re.sub(r"\D", "", body_without_urls)
-  if not acc_matched and acc_digits and len(acc_digits) >= 6 and acc_digits in body_digits:
-    acc_matched = True
-  if not acc_matched and len(acc_digits) >= 8:
-    if acc_digits[-4:] in body_digits and ("*" in body_without_urls or "X" in body_without_urls.upper()):
-      acc_matched = True
-
-  owner_matched = False
-  if target_owner and len(target_owner) >= 4:
-    name_parts = [p for p in re.split(r"\s+", target_owner) if len(p) >= 3]
-    if name_parts and all(part in txt.lower() for part in name_parts):
-      owner_matched = True
-
-  # Reject if clearly sent/paid/debited out without matching our receiving account/name
-  is_outgoing_only = any(k in up for k in ["PAID TO ", "TRANSFERRED TO ", "DEBITED WITH ", "SENT TO "]) and not acc_matched and not owner_matched
-  if is_outgoing_only:
-    return "rejected", f"This message shows money sent out to another recipient rather than credited to {target_acc} ({target_owner.title()})."
-
-  if not (acc_matched or owner_matched):
-    return "rejected", f"Receiver account or name does not match our {method} account ({target_acc} / {target_owner.title()})."
-
-  # 4. Verify amount in SMS strictly
-  amt_matches = re.findall(r"(?:ETB|BIRR)\s*([0-9,]+(?:\.[0-9]{1,2})?)|([0-9,]+(?:\.[0-9]{1,2})?)\s*(?:ETB|BIRR)", up)
-  found_amounts = []
-  for g1, g2 in amt_matches:
-    raw_num = (g1 or g2 or "").replace(",", "").strip()
-    if raw_num:
-      try:
-        found_amounts.append(float(raw_num))
-      except ValueError:
-        pass
-  if not found_amounts:
-    return "needs_review", f"Amount was not clearly shown in the pasted text; flagged for admin check ({float(expected_amt):.2f} ETB)."
-  if not any(abs(x - float(expected_amt)) < 0.01 for x in found_amounts):
-    return "rejected", f"SMS amount does not match your requested deposit amount ({float(expected_amt):.2f} ETB)."
-
-  return "verified", ""
-
-
 def verify_external_receipt_if_configured(method, tx_code, raw_sms, expected_amt):
   if not RECEIPT_VERIFY_URL:
     return "verified", ""
@@ -1787,9 +2011,6 @@ def fetch_receipt_link_details(raw_sms):
     return None, f"Could not open receipt link online ({str(e)[:80]})."
 
 
-
-
-
 def verify_sms_strict(method, raw_sms, expected_amt):
   txt = (raw_sms or "").strip()
   up = txt.upper()
@@ -1799,12 +2020,10 @@ def verify_sms_strict(method, raw_sms, expected_amt):
   target_acc = (tb_num if method == "Telebirr" else cbe_num).strip()
   target_owner = (tb_owner if method == "Telebirr" else cbe_owner).strip().lower()
 
-  # Reject obvious spoof/scam phrases or fake receipt domains
-  scam_markers = ["FAKE RECEIPT", "PHISHING", "TEST PAYMENT", "SIMULATED", "SCRAMBLER"]
+  scam_markers = ["FAKE RECEIPT", "PHISHING", "TEST PAYMENT", "SIMULATED", "SCRAMBLER", "FORWARDED", "DEMO", "SAMPLE"]
   if any(s in up for s in scam_markers):
     return "rejected", "Suspicious or spoofed payment text detected."
 
-  # 1. Must include payment confirmation context or official receipt URL
   has_payment_context = any(k in up for k in [
       "TELEBIRR", "ETHIO TELECOM", "TRANSACTION NUMBER", "TRANSACTION ID",
       "COMMERCIAL BANK OF ETHIOPIA", "CBE", "DEBITED", "TRANSFERRED",
@@ -1814,7 +2033,6 @@ def verify_sms_strict(method, raw_sms, expected_amt):
   if not has_payment_context:
     return "rejected", "Official confirmation SMS or receipt link is missing."
 
-  # 2. Method alignment
   is_cbe_text = ("CBE" in up or "COMMERCIAL BANK OF ETHIOPIA" in up or "APPS.CBE.COM.ET" in up or re.search(r"\bFT[A-Z0-9]{6,18}\b", up) is not None)
   is_tb_text = ("TELEBIRR" in up or "ETHIO TELECOM" in up)
   if method == "CBE" and is_tb_text and not is_cbe_text:
@@ -1822,7 +2040,6 @@ def verify_sms_strict(method, raw_sms, expected_amt):
   if method == "Telebirr" and is_cbe_text and not is_tb_text:
     return "rejected", "Telebirr is selected, but the message is from CBE."
 
-  # If a URL is provided, validate domain and inspect receipt content
   url_match = re.search(r"https?://\S+", txt, re.I)
   fetched = None
   fetch_err = ""
@@ -1842,7 +2059,15 @@ def verify_sms_strict(method, raw_sms, expected_amt):
     combined_text = f"{txt}\n{fetched['text']}"
   comb_up = combined_text.upper()
 
-  # 3. Receiver account or holder name verification
+  today_eat = datetime.now(EAT).date()
+  dates_found = _extract_sms_dates_eat(combined_text)
+  if not dates_found:
+    return "rejected", "Transaction date is missing from the SMS/receipt. Yesterday's or undated messages are not accepted."
+  if any(dt != today_eat for dt in dates_found):
+    return "rejected", f"Transaction date does not match today's date ({today_eat.isoformat()} EAT). Old or yesterday's SMS cannot be reused."
+  if not _has_time_marker(combined_text):
+    return "rejected", "Transaction time is missing from the SMS/receipt."
+
   acc_digits = re.sub(r"\D", "", target_acc)
   acc_matched = False
   url_suffix_matches = re.findall(r"[?&/]([0-9]{6,13})\b", txt)
@@ -1865,14 +2090,12 @@ def verify_sms_strict(method, raw_sms, expected_amt):
     if name_parts and all(part in combined_text.lower() for part in name_parts):
       owner_matched = True
 
-  if not (acc_matched or owner_matched):
-    return "rejected", f"Receiver account or holder name does not match {target_acc} ({target_owner.title()})."
+  if not (acc_matched and owner_matched):
+    return "rejected", f"Both receiver account ({target_acc}) and account name ({target_owner.title()}) must match our {method} account."
 
-  # Reject outgoing-only transfers where funds went to a different account
-  if any(k in up for k in ["PAID TO ", "TRANSFERRED TO ", "DEBITED WITH ", "SENT TO "]) and not acc_matched and not owner_matched:
+  if any(k in up for k in ["PAID TO ", "TRANSFERRED TO ", "DEBITED WITH ", "SENT TO "]) and not acc_matched:
     return "rejected", "Outgoing payment does not match our receiving account."
 
-  # 4. Amount verification
   amt_matches = re.findall(r"(?:ETB|BIRR)\s*([0-9,]+(?:\.[0-9]{1,2})?)|([0-9,]+(?:\.[0-9]{1,2})?)\s*(?:ETB|BIRR)", comb_up)
   found_amounts = []
   for g1, g2 in amt_matches:
@@ -1883,7 +2106,7 @@ def verify_sms_strict(method, raw_sms, expected_amt):
       except ValueError:
         pass
   if not found_amounts:
-    return "needs_review", f"Disputed/unclear amount in text; sent to admin ({float(expected_amt):.2f} ETB)."
+    return "rejected", f"Amount was not found in the SMS/receipt ({float(expected_amt):.2f} ETB required)."
   if not any(abs(x - float(expected_amt)) < 0.01 for x in found_amounts):
     return "rejected", f"Amount in SMS/receipt does not match requested {float(expected_amt):.2f} ETB."
 
@@ -1933,8 +2156,11 @@ def api_deposit():
     save_persistent_state()
     return jsonify({"ok": False, "msg": f"❌ Verification failed: {ext_reason}"})
 
-  # 24/7 autonomous verification & credit for verified deposits of any amount (50, 100, 1000+ ETB);
-  # only genuinely ambiguous/disputed/unreadable cases route to admin queue.
+  USED_TX.add(tx_key)
+  USED_TX.add(tx)
+  if url_key:
+    USED_TX.add(url_key)
+
   if sms_status == "needs_review" or ext_status == "needs_review":
     review_note = reason if sms_status == "needs_review" else ext_reason
     did = "DEP-" + uuid.uuid4().hex[:6].upper()
@@ -1978,13 +2204,16 @@ def api_deposit():
         ),
     })
 
-  USED_TX.add(tx_key)
-  USED_TX.add(tx)
-  if url_key:
-    USED_TX.add(url_key)
   u["invalid_shots"] = 0
   u["registered"] = True
   u["balance"] = round(u["balance"] + amt, 2)
+  u["deposits"].append({
+      "amount": amt,
+      "method": m,
+      "tx": tx,
+      "date_label": datetime.now(EAT).strftime("%Y-%m-%d %H:%M"),
+      "status": "Verified",
+  })
   record_house_financial_event("DEPOSIT", amt, f"Customer: {uid} | Method: {m} | Ref: {tx} (24/7 Auto)")
   return jsonify({
       "ok": True,
