@@ -257,34 +257,42 @@ def get_round_drawn(cycle_num):
     rng = random.Random(f"ethio-keno-cycle-{c_key}-{len(entries)}")
     best_drawn = rng.sample(range(1, 81), DRAW_COUNT)
     if entries:
-      # 70% House Profit / 30% Player Return (RTP = 0.30) engine:
-      # Tracks cumulative stake vs payouts so ~70% stays with the house while ~30% goes back
-      # to players via small/medium wins and partial teaser hits so customers stay engaged.
+      # 50% House Profit / 50% Player Return (RTP = 0.50) engine with stake-aware protection:
+      # - Tracks cumulative stake vs payouts so ~50% profit stays with the house.
+      # - Large individual bets (e.g. 2000 vs 500) are not treated equally: avoids handing
+      #   huge/full payouts to big stakes while giving engaging partial matches and controlled
+      #   small engagement wins so players stay excited without hurting the house.
       round_stake = sum(float(e["bet"]) for e in entries)
+      max_single_bet = max(float(e["bet"]) for e in entries)
       projected_total_stake = HOUSE_TOTAL_STAKE + round_stake
-      target_paid_budget = projected_total_stake * 0.30
+      target_paid_budget = projected_total_stake * 0.50
       remaining_rtp_budget = max(0.0, target_paid_budget - HOUSE_TOTAL_PAID)
-      # Allow occasional small/medium wins within the 30% player return budget, plus partial hits (e.g. 1-2 matches)
-      allow_win_round = (remaining_rtp_budget >= round_stake * 0.25) and (c_key % 3 != 0)
+      high_stake_round = max_single_bet >= 500.0
+      allow_win_round = (
+          remaining_rtp_budget >= round_stake * 0.15
+          and (c_key % 4 != 0)
+          and not (high_stake_round and remaining_rtp_budget < max_single_bet * 0.5)
+      )
+      cap_factor = 0.35 if high_stake_round else (0.75 if allow_win_round else 0.45)
+      max_round_payout_cap = min(remaining_rtp_budget, round_stake * cap_factor) if remaining_rtp_budget > 0 else 0.0
       best_score = None
-      for attempt in range(70):
+      for attempt in range(110):
         cand = rng.sample(range(1, 81), DRAW_COUNT)
         t_bet, t_pay, max_ratio, all_full = _score_drawn_for_entries(cand, entries)
-        if all_full and t_pay > remaining_rtp_budget:
-          penalty = 200000.0 + t_pay
-        elif t_pay > max(remaining_rtp_budget, round_stake * 0.30 if allow_win_round else 0.0):
-          penalty = 10000.0 + (t_pay - remaining_rtp_budget) * 20.0
+        if all_full and t_pay > 0:
+          penalty = 500000.0 + t_pay
+        elif t_pay > max_round_payout_cap:
+          penalty = 25000.0 + (t_pay - max_round_payout_cap) * 40.0
         else:
-          if allow_win_round and 0.0 < t_pay <= remaining_rtp_budget:
-            # Give a real payout within the 30% player pool so players win & don't lose hope
-            penalty = abs(t_pay - min(remaining_rtp_budget, round_stake * 0.85))
+          if allow_win_round and 0.0 < t_pay <= max_round_payout_cap:
+            desired_pay = min(max_round_payout_cap, round_stake * (0.25 if high_stake_round else 0.60))
+            penalty = abs(t_pay - desired_pay) - 1.5
           else:
-            # Non-payout round: mix 0-match rounds with 1-2 partial teaser matches (where payout is 0)
             want_teaser = (c_key % 2 == 1)
             if want_teaser and 0.0 < max_ratio <= 0.45 and t_pay == 0.0:
               penalty = -2.0
             else:
-              penalty = t_pay * 15.0 + max_ratio * 2.0
+              penalty = t_pay * 20.0 + max_ratio * 2.5
         if best_score is None or penalty < best_score:
           best_score = penalty
           best_drawn = cand
@@ -671,7 +679,7 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
         <div style="font-size:12px;font-weight:700;color:#e5e7eb">2) Paste the confirmation SMS</div>
         <div style="font-size:11px;color:#9ca3af;margin-top:2px">Copy the SMS you received after paying and paste it below.</div>
         <div style="font-size:10px;color:#64748b;margin-top:2px">Example Transaction ID: FT26328XXXX / CE535PPHGP</div>
-        <textarea id="dt" rows="3" placeholder="Paste confirmation SMS or Transaction ID here..." style="width:100%;padding:9px;margin:7px 0 4px;border-radius:8px;border:1px solid #374151;background:#111317;color:#fff;font-family:inherit;resize:vertical"></textarea>
+        <textarea id="dt" rows="3" placeholder="Copy & paste confirmation SMS or receipt link (text only, no screenshot)..." style="width:100%;padding:9px;margin:7px 0 4px;border-radius:8px;border:1px solid #374151;background:#111317;color:#fff;font-family:inherit;resize:vertical"></textarea>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
         <button type="button" class="act" style="background:#232934;border:1px solid #374151" onclick="cancelDepositStep2()">Cancel</button>
@@ -1292,102 +1300,46 @@ def webhook():
 
   sender_username = ((msg.get("from") or {}).get("username") or "").strip()
   if photos and BOT_TOKEN:
-    u = get_u(uid)
-    best_photo = photos[-1]
-    file_id = best_photo.get("file_id")
-    img_bytes = b""
-    if file_id:
-      try:
-        gf = requests.get(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
-            params={"file_id": file_id},
-            timeout=10,
-        ).json()
-        fpath = ((gf.get("result") or {}).get("file_path") or "").strip()
-        if fpath:
-          fr = requests.get(
-              f"https://api.telegram.org/file/bot{BOT_TOKEN}/{fpath}",
-              timeout=15,
-          )
-          if fr.ok:
-            img_bytes = fr.content
-      except Exception:
-        pass
-    if img_bytes:
-      cap_low = caption.lower()
-      if is_admin_user(uid, sender_username) and (
-          cap_low.startswith("/broadcast")
-          or cap_low.startswith("/post")
-          or "#post" in cap_low
-          or "#broadcast" in cap_low
-      ):
+    cap_low = caption.lower()
+    if is_admin_user(uid, sender_username) and (
+        cap_low.startswith("/broadcast")
+        or cap_low.startswith("/post")
+        or "#post" in cap_low
+        or "#broadcast" in cap_low
+    ):
+      best_photo = photos[-1]
+      file_id = best_photo.get("file_id")
+      img_bytes = b""
+      if file_id:
+        try:
+          gf = requests.get(
+              f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
+              params={"file_id": file_id},
+              timeout=10,
+          ).json()
+          fpath = ((gf.get("result") or {}).get("file_path") or "").strip()
+          if fpath:
+            fr = requests.get(
+                f"https://api.telegram.org/file/bot{BOT_TOKEN}/{fpath}",
+                timeout=15,
+            )
+            if fr.ok:
+              img_bytes = fr.content
+        except Exception:
+          pass
+      if img_bytes:
         clean_cap = re.sub(r"(?i)^/(broadcast|post)\s*", "", caption)
         clean_cap = re.sub(r"(?i)#(broadcast|post)", "", clean_cap).strip()
         cnt = broadcast_announcement(text=clean_cap, photo_bytes=img_bytes, exclude_uid=uid)
         tg(uid, f"📢 Announcement sent to {cnt} users.", main_reply_kb(uid, base_url))
-        return jsonify({"ok": True})
+      return jsonify({"ok": True})
 
-      shot_digest = hashlib.sha256(img_bytes).hexdigest()[:16].upper()
-      shot_key = f"SHOT_{shot_digest}"
-      if shot_key in USED_TX:
-        u["invalid_shots"] = int(u.get("invalid_shots", 0)) + 1
-        notify_internal_photo(
-            img_bytes,
-            caption=(
-                f"⚠️ Duplicate Screenshot Rejected\n"
-                f"Ref: {shot_key}\n"
-                f"Customer ID: {uid}\n"
-                f"Invalid Count: {u['invalid_shots']}"
-            ),
-        )
-        if u["invalid_shots"] >= 2:
-          tg(
-              uid,
-              "⚠️ Duplicate screenshot rejected. This payment receipt has already been used. Please send a new valid receipt.",
-              main_reply_kb(uid, base_url),
-          )
-        return jsonify({"ok": True})
-
-      amt_match = re.search(r"(\d+(?:\.\d+)?)", caption)
-      amt = float(amt_match.group(1)) if amt_match else 0.0
-      if amt >= 10:
-        USED_TX.add(shot_key)
-        u["invalid_shots"] = 0
-        u["registered"] = True
-        u["balance"] = round(u["balance"] + amt, 2)
-        notify_internal_photo(
-            img_bytes,
-            caption=(
-                f"✅ Screenshot Verified & Credited\n"
-                f"Ref: {shot_key}\n"
-                f"Customer ID: {uid}\n"
-                f"Amount: {amt:.2f} ETB\n"
-                f"New Balance: {u['balance']:.2f} ETB"
-            ),
-        )
-        tg(
-            uid,
-            f"✅ Verified & Completed! {amt:.2f} ETB has been added to your balance.\n💰 New Balance: {u['balance']:.2f} ETB",
-            main_reply_kb(uid, base_url),
-        )
-      else:
-        u["invalid_shots"] = int(u.get("invalid_shots", 0)) + 1
-        notify_internal_photo(
-            img_bytes,
-            caption=(
-                f"🕵️ Internal Screenshot Audit (Unverified / Missing Amount in Caption)\n"
-                f"Ref: {shot_key}\n"
-                f"Customer ID: {uid}\n"
-                f"Caption: {caption or '(none)'}\n"
-                f"Invalid Count: {u['invalid_shots']}"
-            ),
-        )
-        if u["invalid_shots"] >= 2:
-          tg(
-              uid,
-              "❌ Payment not verified (valid receipt or amount >= 10 ETB missing in caption). Please send a valid payment receipt only.",
-              main_reply_kb(uid, base_url),
-          )
+    # Screenshots are disabled for deposits: text/SMS or official receipt link in Wallet only.
+    tg(
+        uid,
+        "❌ Screenshots are not accepted. Please copy and paste your official payment SMS or receipt link in Wallet -> Deposit (text only).",
+        main_reply_kb(uid, base_url),
+    )
     return jsonify({"ok": True})
 
   if not text:
@@ -1677,7 +1629,7 @@ def verify_sms_details(method, raw_sms, expected_amt):
   target_acc = (tb_num if method == "Telebirr" else cbe_num).strip()
   target_owner = (tb_owner if method == "Telebirr" else cbe_owner).strip().lower()
 
-  # 1. Must look like a payment confirmation SMS or official receipt link
+  # 1. Must look like an official payment confirmation SMS or receipt link
   has_payment_context = any(k in up for k in [
       "TELEBIRR", "ETHIO TELECOM", "TRANSACTION NUMBER", "TRANSACTION ID",
       "COMMERCIAL BANK OF ETHIOPIA", "CBE", "DEBITED", "TRANSFERRED",
@@ -1687,18 +1639,13 @@ def verify_sms_details(method, raw_sms, expected_amt):
   if not has_payment_context:
     return "rejected", "Please paste the full official confirmation SMS or receipt link (not just a bare code or unrelated text)."
 
-  # 2. Verify amount in SMS if amounts are present
-  amt_matches = re.findall(r"(?:ETB|BIRR)\s*([0-9,]+(?:\.[0-9]{1,2})?)|([0-9,]+(?:\.[0-9]{1,2})?)\s*(?:ETB|BIRR)", up)
-  found_amounts = []
-  for g1, g2 in amt_matches:
-    raw_num = (g1 or g2 or "").replace(",", "").strip()
-    if raw_num:
-      try:
-        found_amounts.append(float(raw_num))
-      except ValueError:
-        pass
-  if found_amounts and not any(abs(x - float(expected_amt)) < 0.01 for x in found_amounts):
-    return "rejected", f"SMS amount does not match your requested deposit amount ({float(expected_amt):.2f} ETB)."
+  # 2. Check payment method alignment
+  is_cbe_text = ("CBE" in up or "COMMERCIAL BANK OF ETHIOPIA" in up or "APPS.CBE.COM.ET" in up or re.search(r"\bFT[A-Z0-9]{6,18}\b", up) is not None)
+  is_tb_text = ("TELEBIRR" in up or "ETHIO TELECOM" in up)
+  if method == "CBE" and is_tb_text and not is_cbe_text:
+    return "rejected", "Selected method is CBE, but the pasted text is a Telebirr message."
+  if method == "Telebirr" and is_cbe_text and not is_tb_text:
+    return "rejected", "Selected method is Telebirr, but the pasted text is a CBE receipt/message."
 
   # 3. Verify receiver account number, account suffix in receipt URL, or account holder name
   acc_digits = re.sub(r"\D", "", target_acc)
@@ -1724,11 +1671,28 @@ def verify_sms_details(method, raw_sms, expected_amt):
     if name_parts and all(part in txt.lower() for part in name_parts):
       owner_matched = True
 
-  if not (acc_matched or owner_matched):
-    return "needs_review", f"Receiver account/name could not be automatically confirmed for {method} ({target_acc} / {target_owner.title()})."
+  # Reject if clearly sent/paid/debited out without matching our receiving account/name
+  is_outgoing_only = any(k in up for k in ["PAID TO ", "TRANSFERRED TO ", "DEBITED WITH ", "SENT TO "]) and not acc_matched and not owner_matched
+  if is_outgoing_only:
+    return "rejected", f"This message shows money sent out to another recipient rather than credited to {target_acc} ({target_owner.title()})."
 
+  if not (acc_matched or owner_matched):
+    return "rejected", f"Receiver account or name does not match our {method} account ({target_acc} / {target_owner.title()})."
+
+  # 4. Verify amount in SMS strictly
+  amt_matches = re.findall(r"(?:ETB|BIRR)\s*([0-9,]+(?:\.[0-9]{1,2})?)|([0-9,]+(?:\.[0-9]{1,2})?)\s*(?:ETB|BIRR)", up)
+  found_amounts = []
+  for g1, g2 in amt_matches:
+    raw_num = (g1 or g2 or "").replace(",", "").strip()
+    if raw_num:
+      try:
+        found_amounts.append(float(raw_num))
+      except ValueError:
+        pass
   if not found_amounts:
-    return "needs_review", f"Amount was not explicitly shown in the pasted text; please confirm {float(expected_amt):.2f} ETB."
+    return "needs_review", f"Amount was not clearly shown in the pasted text; flagged for admin check ({float(expected_amt):.2f} ETB)."
+  if not any(abs(x - float(expected_amt)) < 0.01 for x in found_amounts):
+    return "rejected", f"SMS amount does not match your requested deposit amount ({float(expected_amt):.2f} ETB)."
 
   return "verified", ""
 
@@ -1778,10 +1742,16 @@ def api_deposit():
     return jsonify({"ok": False, "msg": "❌ Minimum deposit is 10 ETB."})
 
   if not tx:
-    return jsonify({"ok": False, "msg": "❌ Valid Transaction ID not found in SMS. Please paste your full payment confirmation SMS."})
+    return jsonify({"ok": False, "msg": "❌ Valid Transaction ID not found in SMS. Please paste your full payment confirmation SMS or receipt link."})
 
-  if tx in {str(x).upper() for x in USED_TX}:
-    return jsonify({"ok": False, "msg": "⚠️ Duplicate Transaction ID! This payment reference has already been used."})
+  # Normalize receipt URL / reference key so same receipt cannot be reused
+  url_match = re.search(r"https?://\S+", raw_sms, re.I)
+  norm_url = url_match.group(0).strip().upper() if url_match else ""
+  tx_key = f"TX:{tx}"
+  url_key = f"URL:{norm_url}" if norm_url else ""
+
+  if tx_key in {str(x).upper() for x in USED_TX} or tx in {str(x).upper() for x in USED_TX} or (url_key and url_key in {str(x).upper() for x in USED_TX}):
+    return jsonify({"ok": False, "msg": "⚠️ Duplicate Transaction ID or Receipt! This payment reference has already been used."})
 
   st = check_tx_status(m, tx)
   if st == "duplicate":
@@ -1801,7 +1771,6 @@ def api_deposit():
     save_persistent_state()
     return jsonify({"ok": False, "msg": f"❌ Verification failed: {ext_reason}"})
 
-  # If ambiguous/unusual, send to @ethio_keno_play_26 for admin review so customers aren't stuck on clear cases
   if sms_status == "needs_review" or ext_status == "needs_review":
     review_note = reason if sms_status == "needs_review" else ext_reason
     did = "DEP-" + uuid.uuid4().hex[:6].upper()
@@ -1843,8 +1812,10 @@ def api_deposit():
         ),
     })
 
-  # Clear, verified payment -> auto-credit immediately 24/7 (even when admin is offline/asleep)
+  USED_TX.add(tx_key)
   USED_TX.add(tx)
+  if url_key:
+    USED_TX.add(url_key)
   u["invalid_shots"] = 0
   u["registered"] = True
   u["balance"] = round(u["balance"] + amt, 2)
