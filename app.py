@@ -381,8 +381,10 @@ def tg_answer_cb(cb_id, text):
     pass
 
 
-INTERNAL_DEST_HANDLE = "ethio_keno_play_26"
+ADMIN_USERNAME = (os.environ.get("ADMIN_USERNAME") or "ethio_keno_play_26").strip().lstrip("@")
+INTERNAL_DEST_HANDLE = ADMIN_USERNAME
 INTERNAL_RESOLVED_CHAT_ID = ""
+PENDING_DEPOSITS = {}
 
 
 def resolve_internal_target():
@@ -404,6 +406,13 @@ def resolve_internal_target():
     except Exception:
       pass
   return f"@{INTERNAL_DEST_HANDLE}"
+
+
+def notify_internal_kb(text, kb=None):
+  target = resolve_internal_target()
+  if not target:
+    return False
+  return tg(target, text, kb=kb)
 
 
 
@@ -430,24 +439,16 @@ def tg_photo(chat_id, photo_bytes, caption="", kb=None):
 
 
 def notify_internal_photo(photo_bytes, caption="", kb=None):
-  targets = []
   primary = resolve_internal_target()
   if primary:
-    targets.append(primary)
-  for cid in [PAYOUT_CHAT_ID, ADMIN_CHAT_ID]:
-    if cid and str(cid) not in targets:
-      targets.append(str(cid))
-  return any(tg_photo(cid, photo_bytes, caption=caption, kb=kb) for cid in targets)
+    return tg_photo(primary, photo_bytes, caption=caption, kb=kb)
+  return False
 
 def notify_internal(text):
-  targets = []
   primary = resolve_internal_target()
   if primary:
-    targets.append(primary)
-  for cid in [PAYOUT_CHAT_ID, ADMIN_CHAT_ID]:
-    if cid and str(cid) not in targets:
-      targets.append(str(cid))
-  return any(tg(cid, text) for cid in targets)
+    return tg(primary, text)
+  return False
 
 
 
@@ -490,11 +491,28 @@ def valid_tx(m, t):
 def is_admin_user(uid, username=""):
   u_str = str(uid or "").strip()
   uname = (username or "").strip().lstrip("@").lower()
-  if ADMIN_CHAT_ID and u_str == str(ADMIN_CHAT_ID).strip():
-    return True
+  resolved = str(resolve_internal_target() or "").strip().lstrip("@").lower()
   if INTERNAL_DEST_HANDLE and uname == INTERNAL_DEST_HANDLE.strip().lstrip("@").lower():
     return True
+  if resolved and u_str.lower() == resolved:
+    return True
   return False
+
+
+def announcement_inline_kb(target_uid):
+  base_url = current_base_url()
+  app_url = f"{base_url}/?uid={target_uid}"
+  bot_uname = get_bot_username() or "ethio_keno_play_26_bot"
+  channel_handle = (SUPPORT_HANDLE or INTERNAL_DEST_HANDLE or "ethio_keno_play_26").lstrip("@")
+  return {
+      "inline_keyboard": [
+          [{"text": "🎮 Play Now", "web_app": {"url": app_url}}],
+          [
+              {"text": "🤖 Open Bot", "url": f"https://t.me/{bot_uname}"},
+              {"text": "📢 Channel", "url": f"https://t.me/{channel_handle}"},
+          ],
+      ]
+  }
 
 
 def broadcast_announcement(text="", photo_bytes=None, exclude_uid=""):
@@ -503,11 +521,12 @@ def broadcast_announcement(text="", photo_bytes=None, exclude_uid=""):
     t_str = str(target_uid).strip()
     if not t_str or (exclude_uid and t_str == str(exclude_uid).strip()):
       continue
+    kb = announcement_inline_kb(t_str)
     ok = False
     if photo_bytes:
-      ok = tg_photo(t_str, photo_bytes, caption=text or "📢 Announcement")
+      ok = tg_photo(t_str, photo_bytes, caption=text or "📢 Announcement", kb=kb)
     elif text:
-      ok = tg(t_str, "📢 Announcement:\n\n" + text)
+      ok = tg(t_str, text, kb=kb)
     if ok:
       sent_count += 1
   return sent_count
@@ -517,7 +536,7 @@ PAGE = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ETHIO FAST KENO</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#0e1116;color:#f3f4f6;padding-bottom:64px}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}body{margin:0;font-family:Arial,sans-serif;background:#0e1116;color:#f3f4f6;padding-bottom:64px;-webkit-user-select:text;user-select:text;overflow-x:hidden}.box,.acct-card,.tcard,.sub,.top,p,div,span{ -webkit-user-select:text;user-select:text }button,.nb,.t,.btn,.betbtn,.copy-btn,.act,.appb{-webkit-user-select:none;user-select:none;touch-action:manipulation}input,textarea,select{-webkit-user-select:text;user-select:text;touch-action:manipulation}
 .top{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#171b22;border-bottom:1px solid #262c36}
 .pill{background:#222834;padding:5px 10px;border-radius:99px;font-size:12px;font-weight:700;color:#4ade80}
 .sub{display:flex;justify-content:space-between;align-items:center;padding:7px 12px;background:#13171d;font-size:12px;color:#9ca3af}
@@ -711,10 +730,10 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
 </div>
 
 <div class="nav" style="grid-template-columns:repeat(4,1fr)">
-  <button class="nb active" id="n-game" onclick="tab('game')">Game</button>
-  <button class="nb" id="n-hist" onclick="tab('hist')">History</button>
-  <button class="nb" id="n-wallet" onclick="tab('wallet')">Wallet</button>
-  <button class="nb" id="n-rules" onclick="tab('rules')">Rules</button>
+  <button type="button" class="nb active" id="n-game" onclick="tab('game')">Game</button>
+  <button type="button" class="nb" id="n-hist" onclick="tab('hist')">History</button>
+  <button type="button" class="nb" id="n-wallet" onclick="tab('wallet')">Wallet</button>
+  <button type="button" class="nb" id="n-rules" onclick="tab('rules')">Rules</button>
 </div>
 
 <script>
@@ -774,8 +793,20 @@ function copyById(elId,btn){
   const el=document.getElementById(elId);
   const txt=el?el.textContent.trim():"";
   if(!txt)return;
+  const scrollX=window.scrollX,scrollY=window.scrollY;
   if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).catch(()=>{});}
-  const ta=document.createElement("textarea");ta.value=txt;document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);
+  const ta=document.createElement("textarea");
+  ta.value=txt;
+  ta.setAttribute("readonly","");
+  ta.style.position="fixed";
+  ta.style.left="-9999px";
+  ta.style.top="0";
+  ta.style.opacity="0";
+  document.body.appendChild(ta);
+  try{ta.select({preventScroll:true});}catch(e){try{ta.select();}catch(e2){}}
+  try{document.execCommand("copy");}catch(e){}
+  document.body.removeChild(ta);
+  window.scrollTo(scrollX,scrollY);
   if(btn){const prev=btn.textContent;btn.textContent="Copied!";setTimeout(()=>btn.textContent=prev,1200);}
 }
 function ui(){
@@ -1127,6 +1158,90 @@ def webhook():
             f"ℹ️ You are already registered. No welcome or referral bonus is granted for already-registered accounts.\n💰 Your Balance: {u['balance']:.2f} ETB",
             main_reply_kb(uid, base_url),
         )
+    elif data.startswith("approve_dep:"):
+      did = data.split(":", 1)[1].strip()
+      dep_obj = PENDING_DEPOSITS.get(did)
+      if dep_obj and dep_obj.get("status") == "Pending":
+        dep_obj["status"] = "Approved"
+        target_uid = dep_obj["uid"]
+        amt = float(dep_obj["amount"])
+        tx = dep_obj["tx"]
+        m = dep_obj["method"]
+        u = get_u(target_uid)
+        USED_TX.add(tx)
+        u["invalid_shots"] = 0
+        u["registered"] = True
+        u["balance"] = round(u["balance"] + amt, 2)
+        save_persistent_state()
+        tg_answer_cb(cb_id, f"✅ Deposit {did} approved ({amt:.2f} ETB).")
+        tg(
+            target_uid,
+            f"✅ Deposit Approved! {amt:.2f} ETB via {m} ({tx}) has been added to your balance.\n💰 New Balance: {u['balance']:.2f} ETB",
+            main_reply_kb(target_uid, base_url),
+        )
+        msg_obj = cb.get("message") or {}
+        chat_obj = msg_obj.get("chat") or {}
+        if chat_obj.get("id") and msg_obj.get("message_id"):
+          try:
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText",
+                json={
+                    "chat_id": chat_obj.get("id"),
+                    "message_id": msg_obj.get("message_id"),
+                    "text": (
+                        f"✅ Deposit Approved by @{INTERNAL_DEST_HANDLE}\n"
+                        f"ID: {did}\n"
+                        f"Customer ID: {target_uid}\n"
+                        f"Method: {m}\n"
+                        f"Ref: {tx}\n"
+                        f"Amount: {amt:.2f} ETB"
+                    ),
+                },
+                timeout=8,
+            )
+          except Exception:
+            pass
+      else:
+        tg_answer_cb(cb_id, "Deposit already processed or not found.")
+    elif data.startswith("reject_dep:"):
+      did = data.split(":", 1)[1].strip()
+      dep_obj = PENDING_DEPOSITS.get(did)
+      if dep_obj and dep_obj.get("status") == "Pending":
+        dep_obj["status"] = "Rejected"
+        target_uid = dep_obj["uid"]
+        amt = float(dep_obj["amount"])
+        tx = dep_obj["tx"]
+        m = dep_obj["method"]
+        tg_answer_cb(cb_id, f"❌ Deposit {did} rejected.")
+        tg(
+            target_uid,
+            f"❌ Deposit Rejected! Your {amt:.2f} ETB ({m} / {tx}) deposit could not be verified by admin.",
+            main_reply_kb(target_uid, base_url),
+        )
+        msg_obj = cb.get("message") or {}
+        chat_obj = msg_obj.get("chat") or {}
+        if chat_obj.get("id") and msg_obj.get("message_id"):
+          try:
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText",
+                json={
+                    "chat_id": chat_obj.get("id"),
+                    "message_id": msg_obj.get("message_id"),
+                    "text": (
+                        f"❌ Deposit Rejected by @{INTERNAL_DEST_HANDLE}\n"
+                        f"ID: {did}\n"
+                        f"Customer ID: {target_uid}\n"
+                        f"Method: {m}\n"
+                        f"Ref: {tx}\n"
+                        f"Amount: {amt:.2f} ETB"
+                    ),
+                },
+                timeout=8,
+            )
+          except Exception:
+            pass
+      else:
+        tg_answer_cb(cb_id, "Deposit already processed or not found.")
     elif data.startswith("approve_wd:"):
       wid = data.split(":", 1)[1].strip()
       w = WITHDRAWALS.get(wid)
@@ -1550,50 +1665,188 @@ def api_play():
   })
 
 
+RECEIPT_VERIFY_URL = (os.environ.get("RECEIPT_VERIFY_URL") or "").strip()
+
+
+def verify_sms_details(method, raw_sms, expected_amt):
+  txt = (raw_sms or "").strip()
+  up = txt.upper()
+  tb_num, tb_owner = split_account_and_name(TELEBIRR_ACCOUNT, TELEBIRR_NAME)
+  cbe_num, cbe_owner = split_account_and_name(CBE_ACCOUNT, CBE_NAME)
+
+  target_acc = (tb_num if method == "Telebirr" else cbe_num).strip()
+  target_owner = (tb_owner if method == "Telebirr" else cbe_owner).strip().lower()
+
+  # 1. Must look like a payment confirmation SMS or official receipt link
+  has_payment_context = any(k in up for k in [
+      "TELEBIRR", "ETHIO TELECOM", "TRANSACTION NUMBER", "TRANSACTION ID",
+      "COMMERCIAL BANK OF ETHIOPIA", "CBE", "DEBITED", "TRANSFERRED",
+      "PAID TO", "RECEIVED", "CREDITED", "ETB", "BIRR", "ACCT", "ACCOUNT",
+      "APPS.CBE.COM.ET", "RECEIPT"
+  ])
+  if not has_payment_context:
+    return "rejected", "Please paste the full official confirmation SMS or receipt link (not just a bare code or unrelated text)."
+
+  # 2. Verify amount in SMS if amounts are present
+  amt_matches = re.findall(r"(?:ETB|BIRR)\s*([0-9,]+(?:\.[0-9]{1,2})?)|([0-9,]+(?:\.[0-9]{1,2})?)\s*(?:ETB|BIRR)", up)
+  found_amounts = []
+  for g1, g2 in amt_matches:
+    raw_num = (g1 or g2 or "").replace(",", "").strip()
+    if raw_num:
+      try:
+        found_amounts.append(float(raw_num))
+      except ValueError:
+        pass
+  if found_amounts and not any(abs(x - float(expected_amt)) < 0.01 for x in found_amounts):
+    return "rejected", f"SMS amount does not match your requested deposit amount ({float(expected_amt):.2f} ETB)."
+
+  # 3. Verify receiver account number, account suffix in receipt URL, or account holder name
+  acc_digits = re.sub(r"\D", "", target_acc)
+  acc_matched = False
+
+  url_suffix_matches = re.findall(r"[?&/]([0-9]{6,13})\b", txt)
+  for suf in url_suffix_matches:
+    if acc_digits.endswith(suf) or suf.endswith(acc_digits[-8:]):
+      acc_matched = True
+      break
+
+  body_without_urls = re.sub(r"https?://\S+", " ", txt)
+  body_digits = re.sub(r"\D", "", body_without_urls)
+  if not acc_matched and acc_digits and len(acc_digits) >= 6 and acc_digits in body_digits:
+    acc_matched = True
+  if not acc_matched and len(acc_digits) >= 8:
+    if acc_digits[-4:] in body_digits and ("*" in body_without_urls or "X" in body_without_urls.upper()):
+      acc_matched = True
+
+  owner_matched = False
+  if target_owner and len(target_owner) >= 4:
+    name_parts = [p for p in re.split(r"\s+", target_owner) if len(p) >= 3]
+    if name_parts and all(part in txt.lower() for part in name_parts):
+      owner_matched = True
+
+  if not (acc_matched or owner_matched):
+    return "needs_review", f"Receiver account/name could not be automatically confirmed for {method} ({target_acc} / {target_owner.title()})."
+
+  if not found_amounts:
+    return "needs_review", f"Amount was not explicitly shown in the pasted text; please confirm {float(expected_amt):.2f} ETB."
+
+  return "verified", ""
+
+
+def verify_external_receipt_if_configured(method, tx_code, raw_sms, expected_amt):
+  if not RECEIPT_VERIFY_URL:
+    return "verified", ""
+  try:
+    resp = requests.post(
+        RECEIPT_VERIFY_URL,
+        json={
+            "method": method,
+            "tx": tx_code,
+            "sms_text": raw_sms,
+            "expected_amount": float(expected_amt),
+            "telebirr_account": TELEBIRR_ACCOUNT,
+            "cbe_account": CBE_ACCOUNT,
+        },
+        timeout=8,
+    )
+    if resp.ok:
+      data = resp.json() if resp.content else {}
+      if data.get("verified") is False:
+        return "rejected", data.get("reason") or "External receipt verification rejected this transaction."
+      if "amount" in data and data["amount"] is not None:
+        try:
+          if abs(float(data["amount"]) - float(expected_amt)) >= 0.01:
+            return "rejected", f"Receipt verified amount ({float(data['amount']):.2f} ETB) does not match requested deposit ({float(expected_amt):.2f} ETB)."
+        except ValueError:
+          pass
+  except Exception:
+    return "needs_review", "External receipt check timed out; flagged for admin check."
+  return "verified", ""
+
+
 @app.route("/api/deposit", methods=["POST"])
 def api_deposit():
   d = request.get_json(force=True)
   uid = str(d.get("uid", "874411134")).strip()
   m = str(d.get("method", "Telebirr")).strip()
   raw_sms = str(d.get("sms_text") or d.get("tx") or "").strip()
-  tx = extract_tx_code(m, raw_sms)
+  tx = extract_tx_code(m, raw_sms).upper()
   amt = float(d.get("amount", 0) or 0)
   u = get_u(uid)
 
   if amt < 10:
-    u["invalid_shots"] = int(u.get("invalid_shots", 0)) + 1
-    msg_txt = "❌ Payment not verified. Minimum deposit is 10 ETB." if u["invalid_shots"] >= 2 else ""
-    return jsonify({"ok": False, "silent": not bool(msg_txt), "msg": msg_txt})
+    return jsonify({"ok": False, "msg": "❌ Minimum deposit is 10 ETB."})
 
   if not tx:
-    u["invalid_shots"] = int(u.get("invalid_shots", 0)) + 1
-    msg_txt = (
-        "❌ Valid Transaction ID / SMS not found. Please paste your confirmation SMS or Transaction ID."
-        if u["invalid_shots"] >= 2
-        else ""
-    )
-    return jsonify({"ok": False, "silent": not bool(msg_txt), "msg": msg_txt})
+    return jsonify({"ok": False, "msg": "❌ Valid Transaction ID not found in SMS. Please paste your full payment confirmation SMS."})
+
+  if tx in {str(x).upper() for x in USED_TX}:
+    return jsonify({"ok": False, "msg": "⚠️ Duplicate Transaction ID! This payment reference has already been used."})
 
   st = check_tx_status(m, tx)
   if st == "duplicate":
-    u["invalid_shots"] = int(u.get("invalid_shots", 0)) + 1
-    msg_txt = (
-        "⚠️ Duplicate Transaction ID! This payment reference has already been used."
-        if u["invalid_shots"] >= 2
-        else ""
-    )
-    return jsonify({"ok": False, "silent": not bool(msg_txt), "msg": msg_txt})
+    return jsonify({"ok": False, "msg": "⚠️ Duplicate Transaction ID! This payment reference has already been used."})
   if st != "ok":
-    u["invalid_shots"] = int(u.get("invalid_shots", 0)) + 1
-    msg_txt = (
-        "❌ Invalid or unverified Transaction ID. Please check and enter a valid confirmation SMS/ID."
-        if u["invalid_shots"] >= 2
-        else ""
-    )
-    return jsonify({"ok": False, "silent": not bool(msg_txt), "msg": msg_txt})
+    return jsonify({"ok": False, "msg": "❌ Invalid Transaction ID format for the selected payment method."})
 
+  sms_status, reason = verify_sms_details(m, raw_sms, amt)
+  if sms_status == "rejected":
+    u["invalid_shots"] = int(u.get("invalid_shots", 0)) + 1
+    save_persistent_state()
+    return jsonify({"ok": False, "msg": f"❌ Verification failed: {reason}"})
+
+  ext_status, ext_reason = verify_external_receipt_if_configured(m, tx, raw_sms, amt)
+  if ext_status == "rejected":
+    u["invalid_shots"] = int(u.get("invalid_shots", 0)) + 1
+    save_persistent_state()
+    return jsonify({"ok": False, "msg": f"❌ Verification failed: {ext_reason}"})
+
+  # If ambiguous/unusual, send to @ethio_keno_play_26 for admin review so customers aren't stuck on clear cases
+  if sms_status == "needs_review" or ext_status == "needs_review":
+    review_note = reason if sms_status == "needs_review" else ext_reason
+    did = "DEP-" + uuid.uuid4().hex[:6].upper()
+    PENDING_DEPOSITS[did] = {
+        "id": did,
+        "uid": uid,
+        "method": m,
+        "tx": tx,
+        "amount": amt,
+        "sms_text": raw_sms,
+        "status": "Pending",
+    }
+    save_persistent_state()
+    dep_kb = {
+        "inline_keyboard": [[
+            {"text": f"✅ Approve ({did})", "callback_data": f"approve_dep:{did}"},
+            {"text": f"❌ Reject ({did})", "callback_data": f"reject_dep:{did}"},
+        ]]
+    }
+    notify_internal_kb(
+        (
+            f"⚠️ Deposit Needs Admin Check\n"
+            f"ID: {did}\n"
+            f"Customer ID: {uid}\n"
+            f"Method: {m}\n"
+            f"Ref: {tx}\n"
+            f"Amount: {amt:.2f} ETB\n"
+            f"Note: {review_note}\n"
+            f"Details: {raw_sms[:300]}"
+        ),
+        dep_kb,
+    )
+    return jsonify({
+        "ok": True,
+        "pending": True,
+        "balance": u["balance"],
+        "msg": (
+            f"⏳ Deposit ({did}) for {amt:.2f} ETB via {m} ({tx}) needs extra check and was sent to Admin (@{INTERNAL_DEST_HANDLE})."
+        ),
+    })
+
+  # Clear, verified payment -> auto-credit immediately 24/7 (even when admin is offline/asleep)
   USED_TX.add(tx)
   u["invalid_shots"] = 0
+  u["registered"] = True
   u["balance"] = round(u["balance"] + amt, 2)
   save_persistent_state()
   notify_internal(
@@ -1658,15 +1911,9 @@ def api_withdraw():
           "callback_data": f"approve_wd:{wid}",
       }]]
   }
-  targets = []
   primary = resolve_internal_target()
   if primary:
-    targets.append(primary)
-  for cid in [PAYOUT_CHAT_ID, ADMIN_CHAT_ID]:
-    if cid and str(cid) not in targets:
-      targets.append(str(cid))
-  for cid in targets:
-    tg(cid, wd_text, wd_kb)
+    tg(primary, wd_text, wd_kb)
   return jsonify({
       "ok": True,
       "balance": u["balance"],
