@@ -747,8 +747,9 @@ def announcement_inline_kb(target_uid):
 
 def broadcast_announcement(text="", photo_bytes=None, exclude_uid=""):
   sent_count = 0
-  for target_uid in list(USERS.keys()):
-    t_str = str(target_uid).strip()
+  registered_targets = set(str(k).strip() for k, v in USERS.items() if isinstance(v, dict) and v.get("registered"))
+  registered_targets.update(str(x).strip() for x in CLAIMED_BONUS_USERS if str(x).strip())
+  for t_str in sorted(registered_targets):
     if not t_str or (exclude_uid and t_str == str(exclude_uid).strip()):
       continue
     kb = announcement_inline_kb(t_str)
@@ -1034,7 +1035,7 @@ PAGE = """<!DOCTYPE html>
 .wbar{display:flex;align-items:center;gap:8px;padding:8px 10px;background:linear-gradient(90deg,#3b0764 0%,#064e3b 50%,#78350f 100%);border-bottom:2px solid #facc15;font-size:13px;overflow:hidden;position:relative;box-shadow:0 3px 14px rgba(250,204,21,0.35)}
 .wbadge{background:linear-gradient(135deg,#facc15,#fb923c);color:#090d12;font-weight:900;padding:5px 11px;border-radius:8px;white-space:nowrap;font-size:12px;z-index:3;flex-shrink:0;box-shadow:0 0 12px rgba(250,204,21,0.7);letter-spacing:0.3px}
 .wmarquee{flex:1;overflow:hidden;white-space:nowrap;position:relative;min-width:0}
-.wtrack{display:inline-flex;align-items:center;white-space:nowrap;will-change:transform;animation:wscrollAnim 2.6s linear infinite}
+.wtrack{display:inline-flex;align-items:center;white-space:nowrap;will-change:transform;animation:wscrollAnim 7.5s linear infinite}
 .wset{display:inline-flex;align-items:center;gap:10px;padding-right:10px;flex-shrink:0}
 @keyframes wscrollAnim{0%{transform:translate3d(0,0,0)}100%{transform:translate3d(-50%,0,0)}}
 .witem{display:inline-flex;align-items:center;gap:6px;background:linear-gradient(135deg,#1e1b4b,#065f46);border:1.5px solid #fde047;padding:5px 12px;border-radius:9px;color:#ffffff;font-size:13px;font-weight:900;flex-shrink:0;box-shadow:0 0 10px rgba(253,224,71,0.35)}
@@ -1115,13 +1116,7 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
     </div>
     <div id="tickets-list"><div style="color:#9ca3af;margin-top:6px">No tickets placed in this round yet.</div></div>
   </div>
-  <div class="box">
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <strong>🎲 Recent Rounds History</strong>
-      <button type="button" id="inline-gh-more-btn" onclick="toggleInlineGhMore()" style="display:none;background:#1e293b;color:#4ade80;border:1px solid #334155;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:800">Show More</button>
-    </div>
-    <div id="inline-ghlist"><div style="color:#9ca3af;margin-top:6px">No completed rounds yet.</div></div>
-  </div>
+
 </div>
 
 <div id="insuf-modal" class="modal-bg" onclick="closeInsuf()">
@@ -1372,47 +1367,17 @@ function renderTickets(){
   document.getElementById("tcount").textContent=tickets.length;
   if(!tickets.length){wrap.innerHTML='<div style="color:#9ca3af;margin-top:6px">No tickets placed in this round yet.</div>';return;}
   wrap.innerHTML=tickets.map(tk=>{
-    const potWin=calcTicketMaxWin(tk);
-    let stHtml=`<span style="color:#4ade80;font-weight:800">Win: ${potWin.toFixed(2)} ETB</span> | <span class="st-wait">Pending</span>`;
     let cls="tcard";
-    if(roundDone){
-      if(Number(tk.payout||0)>0){stHtml=`<span class="st-win">Won ${Number(tk.payout).toFixed(2)} ETB</span>`;cls+=" won-card";}
-      else{stHtml=`<span style="color:#9ca3af">Max: ${potWin.toFixed(2)} ETB</span>`;}
-    }
+    if(roundDone && Number(tk.payout||0)>0){cls+=" won-card";}
     const mineBadge=tk.is_mine?` <span style="background:#16a34a;color:#fff;padding:1px 6px;border-radius:5px;font-size:10px;font-weight:900">YOU</span>`:"";
     return `<div class="${cls}">
-      <div class="tcard-top"><span><b>${tk.player}</b>${mineBadge} • Bet <b>${Number(tk.bet).toFixed(0)} ETB</b></span><span>${stHtml}</span></div>
+      <div class="tcard-top"><span><b>${tk.player}</b>${mineBadge}</span><span>Bet <b>${Number(tk.bet).toFixed(0)} ETB</b></span></div>
       <div class="tnums">${tk.picks.map(n=>`<span class="tnum${drawnSoFar.has(n)?" matched":""}">${n}</span>`).join("")}</div>
     </div>`;
   }).join("");
 }
 
-let inlineGhExpanded=false;
-function toggleInlineGhMore(){
-  inlineGhExpanded=!inlineGhExpanded;
-  renderInlineGameHistory();
-}
-function renderInlineGameHistory(){
-  const el=document.getElementById("inline-ghlist");
-  const btn=document.getElementById("inline-gh-more-btn");
-  if(!el)return;
-  const arr=(window._latestGameHistory||[]).slice(0,20);
-  if(!arr.length){
-    el.innerHTML='<div style="color:#9ca3af;margin-top:6px">No completed rounds yet.</div>';
-    if(btn)btn.style.display="none";
-    return;
-  }
-  const shown=inlineGhExpanded?arr:arr.slice(0,3);
-  el.innerHTML=shown.map(g=>`<div style="padding:6px 0;border-bottom:1px solid #232934"><div style="color:#4ade80;font-weight:800;font-size:12px;margin-bottom:4px">Round #${g.round} <span style="color:#9ca3af;font-weight:400">(${(g.drawn||[]).length} drawn)</span></div><div style="display:flex;flex-wrap:wrap;gap:4px">${(g.drawn||[]).map(n=>`<span class="tnum">${n}</span>`).join("")}</div></div>`).join("");
-  if(btn){
-    if(arr.length>3){
-      btn.style.display="inline-block";
-      btn.textContent=inlineGhExpanded?"Show Less":`Show More (${arr.length})`;
-    }else{
-      btn.style.display="none";
-    }
-  }
-}
+
 
 async function load(){
   try{
@@ -1472,8 +1437,7 @@ async function load(){
     document.getElementById("hlist").innerHTML=betArr.length?betArr.map(x=>`<div style="padding:6px 0;border-bottom:1px solid #232934"><div>Round #${x.round||x.cycle||"-"} | Bet: <b>${x.bet} ETB</b> | Matches: <b>${x.matches}</b> | Win: <b style="color:#4ade80">${x.payout} ETB</b></div>${(x.picks&&x.picks.length)?`<div style="margin-top:3px;font-size:11px;color:#9ca3af">Picks: ${x.picks.join(", ")}</div>`:""}</div>`).join(""):"No bet history yet.";
     const ghArr=(d.game_history||[]).slice(0,20);
     window._latestGameHistory=ghArr;
-    renderInlineGameHistory();
-    document.getElementById("ghlist").innerHTML=ghArr.length?ghArr.map(g=>`<div style="padding:7px 0;border-bottom:1px solid #232934"><div style="color:#4ade80;font-weight:800;margin-bottom:4px">Round #${g.round} <span style="color:#9ca3af;font-weight:400">(${(g.drawn||[]).length} numbers)</span></div><div style="display:flex;flex-wrap:wrap;gap:4px">${(g.drawn||[]).map(n=>`<span class="tnum">${n}</span>`).join("")}</div></div>`).join(""):"No completed rounds yet.";
+        document.getElementById("ghlist").innerHTML=ghArr.length?ghArr.map(g=>`<div style="padding:7px 0;border-bottom:1px solid #232934"><div style="color:#4ade80;font-weight:800;margin-bottom:4px">Round #${g.round} <span style="color:#9ca3af;font-weight:400">(${(g.drawn||[]).length} numbers)</span></div><div style="display:flex;flex-wrap:wrap;gap:4px">${(g.drawn||[]).map(n=>`<span class="tnum">${n}</span>`).join("")}</div></div>`).join(""):"No completed rounds yet.";
     document.getElementById("wlist").innerHTML=d.wds.length?d.wds.slice().reverse().map(w=>`<div style="padding:6px 0;border-bottom:1px solid #2b303b">${w.id} | ${w.method} (${w.dest}) | ${w.amount} ETB | <b>${w.status}</b>${w.status==="Pending"?`<br><button class="appb" onclick="appw('${w.id}')">Approve (Complete)</button>`:""}</div>`).join(""):"No withdraw requests yet.";
     const whEl=document.getElementById("whlist");
     if(whEl){
@@ -1510,28 +1474,15 @@ async function lockBet(){
   clearSelectionsAndBoard();
   document.getElementById("gmsg").textContent=`✅ Bet locked (${bet} ETB on ${queued.picks.length} numbers). 20 numbers will be drawn when 01:00 ends.`;
 }
-let showAllDrawn=false;
 let lastWatchedForStrip=new Set();
-function toggleDrawnMore(){
-  showAllDrawn=!showAllDrawn;
-  renderDrawnStrip(lastWatchedForStrip);
-}
 function renderDrawnStrip(watchedSet){
   lastWatchedForStrip=watchedSet||new Set();
   const stripEl=document.getElementById("strip");
   const btnEl=document.getElementById("drawn-more-btn");
+  if(btnEl)btnEl.remove();
   if(!stripEl)return;
   const arr=Array.from(drawnSoFar);
-  const visibleArr=showAllDrawn?arr:arr.slice(0,3);
-  stripEl.innerHTML=visibleArr.map(n=>`<span class="chip${lastWatchedForStrip.has(n)?" h":""}">${n}</span>`).join("");
-  if(btnEl){
-    if(arr.length>3){
-      btnEl.style.display="inline-block";
-      btnEl.textContent=showAllDrawn?"Show Less (Top 3)":`Show More (${arr.length} drawn)`;
-    }else{
-      btnEl.style.display="none";
-    }
-  }
+  stripEl.innerHTML=arr.map(n=>`<span class="chip${lastWatchedForStrip.has(n)?" h":""}">${n}</span>`).join("");
 }
 function appendDrawnChipInstant(n, watchedSet, updateMainBall){
   if(drawnSoFar.has(n))return;
@@ -1752,12 +1703,14 @@ def webhook():
           u.get("registered")
           or u.get("bonus_claimed")
           or u.get("claimed_10_bonus")
+          or u.get("welcome_bonus_given")
           or uid in CLAIMED_BONUS_USERS
       )
       if not already_claimed:
         u["registered"] = True
         u["bonus_claimed"] = True
         u["claimed_10_bonus"] = True
+        u["welcome_bonus_given"] = True
         CLAIMED_BONUS_USERS.add(uid)
         u["balance"] = round(float(u.get("balance", 0.0) or 0.0) + 10.0, 2)
         inviter_id = (u.get("referred_by") or REFERRED_USERS.get(uid) or "").strip()
@@ -2148,10 +2101,7 @@ def webhook():
 
 
 def sort_tickets_for_display(entries, viewer_uid):
-  mine = [e for e in entries if str(e.get("uid", "")) == str(viewer_uid)]
-  others = [e for e in entries if str(e.get("uid", "")) != str(viewer_uid)]
-  others_sorted = sorted(others, key=lambda x: float(x.get("bet", 0) or 0), reverse=True)
-  ordered = mine + others_sorted
+  ordered = sorted(entries, key=lambda x: float(x.get("bet", 0) or 0), reverse=True)
   return [
       {
           "player": e["player"],
