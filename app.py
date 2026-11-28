@@ -1010,11 +1010,14 @@ PAGE = """<!DOCTYPE html>
 .top{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#171b22;border-bottom:1px solid #262c36}
 .pill{background:#222834;padding:5px 10px;border-radius:99px;font-size:12px;font-weight:700;color:#4ade80}
 .sub{display:flex;justify-content:space-between;align-items:center;padding:7px 12px;background:#13171d;font-size:12px;color:#9ca3af}
-.wbar{display:flex;align-items:center;gap:8px;padding:6px 12px;background:linear-gradient(90deg,#12241a 0%,#171d26 50%,#12241a 100%);border-bottom:1px solid #1f3528;font-size:11px;overflow:hidden}
-.wbadge{background:#16a34a;color:#05140a;font-weight:900;padding:2px 7px;border-radius:6px;white-space:nowrap;font-size:10px}
-.wscroll{display:flex;gap:14px;overflow-x:auto;white-space:nowrap;scrollbar-width:none;-ms-overflow-style:none}
-.wscroll::-webkit-scrollbar{display:none}
-.witem{color:#e5e7eb;font-weight:700}.witem b{color:#4ade80}
+.wbar{display:flex;align-items:center;gap:8px;padding:6px 10px;background:linear-gradient(90deg,#1e1b4b 0%,#064e3b 50%,#4c1d95 100%);border-bottom:1px solid #34d399;font-size:11px;overflow:hidden;position:relative}
+.wbadge{background:linear-gradient(135deg,#facc15,#f59e0b);color:#111827;font-weight:900;padding:3px 8px;border-radius:6px;white-space:nowrap;font-size:10px;z-index:2;box-shadow:0 0 8px rgba(250,204,21,0.45)}
+.wmarquee{flex:1;overflow:hidden;white-space:nowrap;position:relative}
+.wtrack{display:inline-flex;gap:18px;align-items:center;white-space:nowrap;animation:wscrollAnim 18s linear infinite}
+.wtrack:hover{animation-play-state:paused}
+@keyframes wscrollAnim{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+.witem{display:inline-flex;align-items:center;gap:5px;background:rgba(15,23,42,0.72);border:1px solid rgba(74,222,128,0.35);padding:2px 8px;border-radius:99px;color:#f8fafc;font-weight:700}
+.witem .rk{color:#facc15;font-weight:900}.witem .pid{color:#38bdf8;font-weight:800}.witem .amt{color:#4ade80;font-weight:900}
 .tm{background:#22c55e;color:#061209;font-weight:800;padding:3px 9px;border-radius:7px}
 .stage{margin:8px 12px;padding:12px 10px;border-radius:14px;background:radial-gradient(circle at top,#1c2430 0%,#12161d 75%);border:1px solid #262d38;text-align:center}
 .ball{width:62px;height:62px;line-height:54px;border-radius:50%;margin:0 auto 10px;background:radial-gradient(circle at 30% 30%,#4ade80,#16a34a);color:#061209;font-size:22px;font-weight:900;border:4px solid #86efac;box-shadow:0 0 0 3px rgba(74,222,128,0.28)}
@@ -1053,7 +1056,7 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
 .nb{background:none;border:none;color:#9ca3af;font-weight:700;font-size:11px}.nb.active{color:#4ade80}
 </style></head><body>
 <div class="top"><strong style="color:#4ade80">⚡ ETHIO FAST KENO</strong><div class="pill">Balance: <span id="bal">0.00</span> ETB</div></div>
-<div class="wbar"><span class="wbadge">🏆 TOP WINNERS</span><div class="wscroll" id="top-winners-bar"><span class="witem">Loading top winners...</span></div></div>
+<div class="wbar"><span class="wbadge">🏆 TOP WINNERS</span><div class="wmarquee"><div class="wtrack" id="top-winners-bar"><span class="witem">Loading top winners...</span></div></div></div>
 <div class="sub"><div>Picks: <strong id="cnt">0</strong>/10 | ID: <strong id="uid-lbl">-</strong></div><div class="tm" id="tm">01:00</div></div>
 
 <div id="p-game" class="panel active">
@@ -1063,6 +1066,7 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
     <div class="strip" id="strip"></div>
   </div>
   <div id="out-banner" class="banner"></div>
+  <div id="board-wrap">
   <div class="grid" id="grid"></div>
   <div class="ctrl">
     <div class="row" style="grid-template-columns:36px 1fr 36px 44px 54px">
@@ -1079,6 +1083,7 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
       <button class="btn" onclick="setBetVal(100)">100 ETB</button>
     </div>
     <button class="betbtn" id="betbtn" onclick="lockBet()">PLACE BET</button>
+  </div>
   </div>
   <div class="box" id="gmsg">Betting window is 1 minute. Pick 1 to 10 numbers and a stake (min 2 ETB), then tap Place Bet. When 01:00 ends, 20 numbers are drawn.</div>
   <div class="box">
@@ -1380,7 +1385,8 @@ async function load(){
     renderTickets();
     const twBar=document.getElementById("top-winners-bar");
     if(twBar && Array.isArray(d.top_winners) && d.top_winners.length){
-      twBar.innerHTML=d.top_winners.map((w,idx)=>`<span class="witem">#${idx+1} ID <b>${w.player}</b> won <b>${Number(w.amount||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} ETB</b></span>`).join(" • ");
+      const itemsHtml=d.top_winners.map((w,idx)=>`<span class="witem"><span class="rk">#${idx+1}</span> ID <span class="pid">${w.player}</span> won <span class="amt">${Number(w.amount||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} ETB</span></span>`).join("");
+      twBar.innerHTML=itemsHtml + itemsHtml;
     }
     const depArr=(d.deposits||[]).slice(-20).reverse();
     document.getElementById("deplist").innerHTML=depArr.length?depArr.map(x=>`<div style="padding:5px 0;border-bottom:1px solid #232934"><b>${Number(x.amount||0).toFixed(2)} ETB</b> | ${x.method} | ${x.tx} | ${x.date_label||""}</div>`).join(""):"No deposits yet.";
@@ -1395,6 +1401,7 @@ async function load(){
   }catch(e){}
 }
 function clearSelectionsAndBoard(){picks.clear();document.querySelectorAll(".t").forEach(x=>x.classList.remove("sel"));ui();}
+function setBoardVisible(show){const bw=document.getElementById("board-wrap");if(bw)bw.style.display=show?"block":"none";}
 function resetDrawStage(){drawnSoFar.clear();roundDone=false;tickets=[];document.getElementById("strip").innerHTML="";document.getElementById("dprog").textContent="0 / 20";document.getElementById("ball").textContent="--";const bn=document.getElementById("out-banner");bn.className="banner";bn.textContent="";renderTickets();}
 async function lockBet(){
   if(drawing)return;
@@ -1431,6 +1438,7 @@ async function runRoundDraw(targetCycle, allowResync){
   const isResync=(lastDrawnCycle===cNum && Boolean(allowResync));
   lastDrawnCycle=cNum;
   drawing=true;
+  setBoardVisible(false);
   if(!isResync){
     resetDrawStage();
   }
@@ -1508,6 +1516,7 @@ async function runRoundDraw(targetCycle, allowResync){
   bn.className="banner";bn.textContent="";
   tickets=[];
   clearSelectionsAndBoard();
+  setBoardVisible(true);
   drawing=false;
   load();
 }
@@ -1552,6 +1561,7 @@ setInterval(()=>{
       document.getElementById("tm").textContent="00:00";
       runRoundDraw(cInfo.cycleNum);
     }else if(lastServerPhase==="drawing" && cInfo.phase==="betting" && lastServerCycle!==cInfo.cycleNum){
+      setBoardVisible(true);
       resetDrawStage();
       tickets=[];
       renderTickets();
@@ -1684,6 +1694,8 @@ def webhook():
         u = get_u(target_uid)
         USED_TX.add(tx)
         USED_TX.add(f"TX:{tx}")
+        if dep_obj.get("url_key"):
+          USED_TX.add(dep_obj["url_key"])
         u["invalid_shots"] = 0
         u["registered"] = True
         u["balance"] = round(u["balance"] + amt, 2)
@@ -2323,7 +2335,7 @@ def api_deposit():
     return jsonify({"ok": False, "msg": "❌ Minimum deposit is 50 ETB."})
 
   if not tx:
-    return jsonify({"ok": False, "msg": "❌ Valid Transaction ID not found. Please paste your full payment confirmation SMS or receipt link."})
+    return jsonify({"ok": False, "msg": "❌ Valid Transaction / FT ID not found. Please paste your confirmation SMS or FT / Transaction ID."})
 
   url_match = re.search(r"https?://\S+", raw_sms, re.I)
   norm_url = url_match.group(0).strip().upper() if url_match else ""
@@ -2331,91 +2343,65 @@ def api_deposit():
   url_key = f"URL:{norm_url}" if norm_url else ""
 
   used_upper = {str(x).upper() for x in USED_TX}
-  if tx_key in used_upper or tx in used_upper or (url_key and url_key in used_upper):
-    return jsonify({"ok": False, "msg": "⚠️ Duplicate Transaction ID or Receipt! This payment reference has already been used."})
+  pending_txs = {
+      str(p.get("tx", "")).upper()
+      for p in PENDING_DEPOSITS.values()
+      if p.get("status") == "Pending"
+  }
+  if tx_key in used_upper or tx in used_upper or tx in pending_txs or (url_key and url_key in used_upper):
+    return jsonify({"ok": False, "msg": "⚠️ Duplicate Transaction / FT ID! This payment reference has already been used or is pending."})
 
   st = check_tx_status(m, tx)
   if st == "duplicate":
     return jsonify({"ok": False, "msg": "⚠️ Duplicate Transaction ID! This payment reference has already been used."})
   if st != "ok":
-    return jsonify({"ok": False, "msg": "❌ Invalid Transaction ID format for the selected payment method."})
+    return jsonify({"ok": False, "msg": "❌ Invalid Transaction / FT ID format for the selected payment method."})
 
+  # Check SMS / receipt details to attach a helpful verification note for the Admin,
+  # then route EVERY valid non-duplicate deposit to Admin for Approve / Reject.
   sms_status, reason = verify_sms_strict(m, raw_sms, amt)
-  if sms_status == "rejected":
-    u["invalid_shots"] = int(u.get("invalid_shots", 0)) + 1
-    save_persistent_state()
-    return jsonify({"ok": False, "msg": f"❌ Verification failed: {reason}"})
+  check_summary = "✅ Auto-check: Format & non-duplicate OK" if sms_status == "verified" else f"⚠️ Note: {reason}"
 
-  ext_status, ext_reason = verify_external_receipt_if_configured(m, tx, raw_sms, amt)
-  if ext_status == "rejected":
-    u["invalid_shots"] = int(u.get("invalid_shots", 0)) + 1
-    save_persistent_state()
-    return jsonify({"ok": False, "msg": f"❌ Verification failed: {ext_reason}"})
-
-  USED_TX.add(tx_key)
-  USED_TX.add(tx)
-  if url_key:
-    USED_TX.add(url_key)
-
-  if sms_status == "needs_review" or ext_status == "needs_review":
-    review_note = reason if sms_status == "needs_review" else ext_reason
-    did = "DEP-" + uuid.uuid4().hex[:6].upper()
-    PENDING_DEPOSITS[did] = {
-        "id": did,
-        "uid": uid,
-        "method": m,
-        "tx": tx,
-        "amount": amt,
-        "sms_text": raw_sms,
-        "status": "Pending",
-        "created_ts": int(time.time()),
-        "check_note": review_note,
-    }
-    save_persistent_state()
-    dep_kb = {
-        "inline_keyboard": [[
-            {"text": f"✅ Approve ({did})", "callback_data": f"approve_dep:{did}"},
-            {"text": f"❌ Reject ({did})", "callback_data": f"reject_dep:{did}"},
-        ]]
-    }
-    notify_internal_kb(
-        (
-            f"🔎 Deposit Check Queue\n"
-            f"ID: {did}\n"
-            f"Customer ID: {uid}\n"
-            f"Method: {m}\n"
-            f"Ref: {tx}\n"
-            f"Amount: {amt:.2f} ETB\n"
-            f"Note: {review_note}\n"
-            f"Details: {raw_sms[:350]}"
-        ),
-        dep_kb,
-    )
-    return jsonify({
-        "ok": True,
-        "pending": True,
-        "balance": u["balance"],
-        "msg": (
-            f"⏳ Deposit ({did}) for {amt:.2f} ETB ({m} / {tx}) queued for extra verification."
-        ),
-    })
-
-  u["invalid_shots"] = 0
-  u["registered"] = True
-  u["balance"] = round(u["balance"] + amt, 2)
-  u["deposits"].append({
-      "amount": amt,
+  did = "DEP-" + uuid.uuid4().hex[:6].upper()
+  PENDING_DEPOSITS[did] = {
+      "id": did,
+      "uid": uid,
       "method": m,
       "tx": tx,
-      "date_label": datetime.now(EAT).strftime("%Y-%m-%d %H:%M"),
-      "status": "Verified",
-  })
-  record_house_financial_event("DEPOSIT", amt, f"Customer: {uid} | Method: {m} | Ref: {tx} (24/7 Auto)")
+      "amount": amt,
+      "sms_text": raw_sms,
+      "url_key": url_key,
+      "status": "Pending",
+      "created_ts": int(time.time()),
+      "check_note": check_summary,
+  }
+  save_persistent_state()
+
+  dep_kb = {
+      "inline_keyboard": [[
+          {"text": f"✅ Approve ({did})", "callback_data": f"approve_dep:{did}"},
+          {"text": f"❌ Reject ({did})", "callback_data": f"reject_dep:{did}"},
+      ]]
+  }
+  notify_internal_kb(
+      (
+          f"💳 New Deposit Request (Admin Approval Required)\n"
+          f"ID: {did}\n"
+          f"Customer ID: {uid}\n"
+          f"Method: {m}\n"
+          f"FT / Ref ID: {tx}\n"
+          f"Amount: {amt:.2f} ETB\n"
+          f"{check_summary}\n"
+          f"SMS / Details: {raw_sms[:400]}"
+      ),
+      dep_kb,
+  )
   return jsonify({
       "ok": True,
+      "pending": True,
       "balance": u["balance"],
       "msg": (
-          f"✅ Verified & Credited! {amt:.2f} ETB via {m} ({tx}) has been added to your balance."
+          f"⏳ Deposit request ({did}) for {amt:.2f} ETB ({m} / {tx}) sent to Admin for approval."
       ),
   })
 
