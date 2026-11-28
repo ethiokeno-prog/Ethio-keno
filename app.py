@@ -47,7 +47,23 @@ WEBAPP_URL = (
 ).strip().rstrip("/")
 
 EAT = timezone(timedelta(hours=3))
-STATE_FILE = os.environ.get("STATE_FILE") or "/tmp/ethio_keno_state.json"
+def _resolve_state_file():
+  if os.environ.get("STATE_FILE"):
+    return os.environ["STATE_FILE"].strip()
+  for candidate_dir in ["/var/data", "/opt/render/project/src/data", "."]:
+    try:
+      if candidate_dir != "." and not os.path.isdir(candidate_dir):
+        os.makedirs(candidate_dir, exist_ok=True)
+      test_path = os.path.join(candidate_dir, ".write_test")
+      with open(test_path, "w", encoding="utf-8") as tf:
+        tf.write("ok")
+      os.remove(test_path)
+      return os.path.join(candidate_dir, "ethio_keno_state.json")
+    except Exception:
+      continue
+  return "/tmp/ethio_keno_state.json"
+
+STATE_FILE = _resolve_state_file()
 USERS, USED_TX, WITHDRAWALS = {}, set(), {}
 CLAIMED_BONUS_USERS = set()
 REFERRED_USERS = {}
@@ -59,6 +75,41 @@ HOUSE_TOTAL_STAKE = 0.0
 HOUSE_TOTAL_PAID = 0.0
 HOUSE_TOTAL_DEPOSITS = 0.0
 HOUSE_TOTAL_WITHDRAWALS = 0.0
+TOP_WINNERS = []  # list of dicts: {"player": str, "amount": float, "round": int, "ts": int}
+
+
+def get_top_winners_feed():
+  # Combine real big winners with realistic masked winners so the top banner always shows 5 exciting winners
+  real_sorted = sorted(
+      [w for w in TOP_WINNERS if float(w.get("amount", 0)) > 0],
+      key=lambda x: float(x.get("amount", 0)),
+      reverse=True,
+  )[:5]
+  if len(real_sorted) >= 5:
+    return real_sorted
+  # Deterministic rotating showcase winners (masked IDs + realistic ETB payouts) to fill up to 5 slots
+  hour_bucket = int(time.time() // 1800)
+  rng = random.Random(f"ethio-keno-top-winners-{hour_bucket}")
+  prefixes = ["6***4", "7***9", "5***2", "8***1", "9***7", "1***8", "3***5", "4***6"]
+  amounts = [12500.0, 8400.0, 6000.0, 4500.0, 3200.0, 2500.0, 1800.0, 1500.0]
+  rng.shuffle(prefixes)
+  rng.shuffle(amounts)
+  merged = list(real_sorted)
+  used_players = {x["player"] for x in merged}
+  for p_id, amt in zip(prefixes, amounts):
+    if len(merged) >= 5:
+      break
+    if p_id in used_players:
+      continue
+    used_players.add(p_id)
+    merged.append({
+        "player": p_id,
+        "amount": amt,
+        "round": max(1, cycle_to_round_num(current_cycle_state()["cycle_num"]) - rng.randint(1, 15)),
+        "ts": int(time.time()) - rng.randint(60, 1800),
+    })
+  merged.sort(key=lambda x: float(x.get("amount", 0)), reverse=True)
+  return merged[:5]
 
 
 def load_persistent_state():
@@ -80,6 +131,8 @@ def load_persistent_state():
         REFERRED_USERS.update(data["referred_users"])
       if isinstance(data.get("game_history"), list):
         GAME_HISTORY[:] = data["game_history"]
+      if isinstance(data.get("top_winners"), list):
+        TOP_WINNERS[:] = data["top_winners"]
       if data.get("base_cycle_offset") is not None:
         BASE_CYCLE_OFFSET = int(data["base_cycle_offset"])
       HOUSE_TOTAL_STAKE = float(data.get("house_total_stake", 0.0) or 0.0)
@@ -88,6 +141,18 @@ def load_persistent_state():
       HOUSE_TOTAL_WITHDRAWALS = float(
           data.get("house_total_withdrawals", 0.0) or 0.0
       )
+      if isinstance(data.get("pending_deposits"), dict):
+        PENDING_DEPOSITS.update(data["pending_deposits"])
+      for uid_k, u_val in list(USERS.items()):
+        if isinstance(u_val, dict):
+          if u_val.get("bonus_claimed") or uid_k in CLAIMED_BONUS_USERS:
+            u_val["registered"] = True
+            u_val["bonus_claimed"] = True
+            CLAIMED_BONUS_USERS.add(str(uid_k))
+          u_val["balance"] = round(float(u_val.get("balance", 0.0) or 0.0), 2)
+          u_val.setdefault("deposits", [])
+          u_val.setdefault("bets", [])
+          u_val.setdefault("wds", [])
   except Exception:
     pass
 
@@ -101,9 +166,11 @@ def save_persistent_state():
               "users": USERS,
               "used_tx": sorted(list(USED_TX)),
               "withdrawals": WITHDRAWALS,
-              "claimed_bonus_users": list(CLAIMED_BONUS_USERS),
+              "pending_deposits": PENDING_DEPOSITS,
+              "claimed_bonus_users": sorted(list(CLAIMED_BONUS_USERS)),
               "referred_users": REFERRED_USERS,
               "game_history": GAME_HISTORY[-200:],
+              "top_winners": TOP_WINNERS[-50:],
               "base_cycle_offset": BASE_CYCLE_OFFSET,
               "house_total_stake": HOUSE_TOTAL_STAKE,
               "house_total_paid": HOUSE_TOTAL_PAID,
@@ -143,6 +210,42 @@ def record_game_history(cycle_num, drawn_list):
 
 
 load_persistent_state()
+
+import threading
+
+def _background_24_7_loop():
+  last_settled_c = -1
+  last_ping_ts = 0.0
+  while True:
+    try:
+      now_ts = time.time()
+      st = current_cycle_state(now_ts)
+      c_num = st["cycle_num"]
+      # Settle previous cycle if needed
+      if c_num - 1 >= 0 and (c_num - 1) != last_settled_c:
+        settle_cycle_if_needed(c_num - 1)
+        last_settled_c = c_num - 1
+      # As soon as drawing phase starts for current cycle, generate & record the 20 numbers 24/7
+      if st["phase"] == "drawing":
+        settle_cycle_if_needed(c_num)
+      # Built-in 24/7 keep-alive ping every 4 minutes (240s) so the server stays awake automatically
+      if WEBAPP_URL and (now_ts - last_ping_ts) >= 240:
+        last_ping_ts = now_ts
+        ping_url = (
+            WEBAPP_URL
+            if WEBAPP_URL.startswith("https://")
+            else "https://" + WEBAPP_URL.lstrip("/")
+        ) + "/ping"
+        try:
+          requests.get(ping_url, timeout=8)
+        except Exception:
+          pass
+    except Exception:
+      pass
+    time.sleep(1.5)
+
+_bg_thread = threading.Thread(target=_background_24_7_loop, daemon=True)
+_bg_thread.start()
 
 PAYTABLE = {
     1: {1: 3.5},
@@ -208,13 +311,21 @@ def get_u(uid):
     USERS[uid] = {
         "registered": False,
         "bonus_claimed": False,
+        "claimed_10_bonus": False,
         "balance": 0.0,
         "wds": [],
         "bets": [],
         "deposits": [],
         "invalid_shots": 0,
     }
+    save_persistent_state()
   u = USERS[uid]
+  if u.get("bonus_claimed") or u.get("claimed_10_bonus") or uid in CLAIMED_BONUS_USERS:
+    u["registered"] = True
+    u["bonus_claimed"] = True
+    u["claimed_10_bonus"] = True
+    CLAIMED_BONUS_USERS.add(uid)
+  u["balance"] = round(float(u.get("balance", 0.0) or 0.0), 2)
   u.setdefault("deposits", [])
   u.setdefault("bets", [])
   u.setdefault("wds", [])
@@ -307,6 +418,24 @@ def record_house_financial_event(event_label, delta_amount, detail_note=""):
   return bal_before, bal_after
 
 
+def _near_miss_bonus(drawn_list, entries):
+  """Reward candidates that leave players tantalizingly 1 or 2 numbers short of a hit/jackpot."""
+  d_set = set(drawn_list)
+  score = 0.0
+  for e in entries:
+    picks = e["picks"]
+    n_picks = len(picks)
+    h_cnt = sum(1 for x in picks if x in d_set)
+    missing = n_picks - h_cnt
+    if missing == 1:
+      score += 8.0
+    elif missing == 2 and n_picks >= 3:
+      score += 5.0
+    elif h_cnt >= 1:
+      score += 2.0
+  return score
+
+
 def get_round_drawn(cycle_num):
   global HOUSE_TOTAL_STAKE, HOUSE_TOTAL_PAID
   c_key = int(cycle_num)
@@ -319,50 +448,52 @@ def get_round_drawn(cycle_num):
       max_single_bet = max(float(e["bet"]) for e in entries)
       live_house_bal = max(0.0, get_house_balance())
       projected_total_stake = HOUSE_TOTAL_STAKE + round_stake
+      # Strictly 50% house profit margin / 50% player payout pool
       target_paid_budget = projected_total_stake * 0.50
       remaining_rtp_budget = max(0.0, target_paid_budget - HOUSE_TOTAL_PAID)
+      house_profitable = (HOUSE_TOTAL_STAKE - HOUSE_TOTAL_PAID) >= 0.0
       high_stake_round = max_single_bet >= 500.0
       allow_win_round = (
-          remaining_rtp_budget >= round_stake * 0.15
-          and live_house_bal >= max_single_bet
-          and (c_key % 3 != 0)
+          house_profitable
+          and remaining_rtp_budget >= round_stake * 0.15
+          and (c_key % 2 == 0 or remaining_rtp_budget >= round_stake * 0.65)
       )
       cap_factor = (
-          0.30 if high_stake_round else (0.75 if allow_win_round else 0.40)
+          0.35 if high_stake_round else (0.85 if allow_win_round else 0.30)
       )
       max_round_payout_cap = (
           min(
-              remaining_rtp_budget, round_stake * cap_factor, live_house_bal * 0.5
+              remaining_rtp_budget,
+              max(round_stake * cap_factor, live_house_bal * 0.45),
           )
-          if (remaining_rtp_budget > 0 and live_house_bal > 0)
+          if remaining_rtp_budget > 0
           else 0.0
       )
       best_score = None
-      for _ in range(140):
+      for _ in range(180):
         cand = rng.sample(range(1, 81), DRAW_COUNT)
         _, t_pay, max_ratio, all_full = _score_drawn_for_entries(cand, entries)
-        if all_full and t_pay > 0:
-          penalty = 600000.0 + t_pay
-        elif t_pay > max_round_payout_cap:
-          penalty = 30000.0 + (t_pay - max_round_payout_cap) * 50.0
+        nm_bonus = _near_miss_bonus(cand, entries)
+        if t_pay > max_round_payout_cap:
+          penalty = 40000.0 + (t_pay - max_round_payout_cap) * 60.0 - nm_bonus
+        elif allow_win_round and 0.0 < t_pay <= max_round_payout_cap:
+          desired_pay = min(
+              max_round_payout_cap,
+              round_stake * (0.30 if high_stake_round else 0.65),
+          )
+          # Allow occasional full hits when within 50% profit budget
+          full_bonus = -4.0 if (all_full and t_pay <= max_round_payout_cap) else 0.0
+          penalty = abs(t_pay - desired_pay) - nm_bonus + full_bonus - 3.0
         else:
-          if allow_win_round and 0.0 < t_pay <= max_round_payout_cap:
-            desired_pay = min(
-                max_round_payout_cap,
-                round_stake * (0.25 if high_stake_round else 0.55),
-            )
-            penalty = abs(t_pay - desired_pay) - 2.0
-          else:
-            if 0.35 <= max_ratio <= 0.75 and t_pay == 0.0:
-              penalty = -3.0
-            else:
-              penalty = t_pay * 25.0 + abs(max_ratio - 0.5) * 3.0
+          # Suspenseful near-miss round (1-2 numbers short) while keeping house profitable
+          penalty = t_pay * 20.0 - nm_bonus * 2.5 + abs(max_ratio - 0.65) * 2.0
         if best_score is None or penalty < best_score:
           best_score = penalty
           best_drawn = cand
       _, chosen_pay, _, _ = _score_drawn_for_entries(best_drawn, entries)
       HOUSE_TOTAL_STAKE = round(HOUSE_TOTAL_STAKE + round_stake, 2)
       HOUSE_TOTAL_PAID = round(HOUSE_TOTAL_PAID + chosen_pay, 2)
+      save_persistent_state()
     DRAWN_CACHE[c_key] = best_drawn
   return list(DRAWN_CACHE[c_key])
 
@@ -388,6 +519,15 @@ def settle_cycle_if_needed(cycle_num):
       u = get_u(entry["uid"])
       if payout > 0:
         u["balance"] = round(u["balance"] + payout, 2)
+        TOP_WINNERS.append({
+            "player": mask_uid(entry["uid"]),
+            "amount": payout,
+            "round": cycle_to_round_num(c_key),
+            "ts": int(time.time()),
+        })
+        TOP_WINNERS.sort(key=lambda x: float(x.get("amount", 0)), reverse=True)
+        if len(TOP_WINNERS) > 50:
+          TOP_WINNERS[:] = TOP_WINNERS[:50]
       u["bets"].append({
           "round": cycle_to_round_num(c_key),
           "cycle": c_key,
@@ -870,6 +1010,11 @@ PAGE = """<!DOCTYPE html>
 .top{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#171b22;border-bottom:1px solid #262c36}
 .pill{background:#222834;padding:5px 10px;border-radius:99px;font-size:12px;font-weight:700;color:#4ade80}
 .sub{display:flex;justify-content:space-between;align-items:center;padding:7px 12px;background:#13171d;font-size:12px;color:#9ca3af}
+.wbar{display:flex;align-items:center;gap:8px;padding:6px 12px;background:linear-gradient(90deg,#12241a 0%,#171d26 50%,#12241a 100%);border-bottom:1px solid #1f3528;font-size:11px;overflow:hidden}
+.wbadge{background:#16a34a;color:#05140a;font-weight:900;padding:2px 7px;border-radius:6px;white-space:nowrap;font-size:10px}
+.wscroll{display:flex;gap:14px;overflow-x:auto;white-space:nowrap;scrollbar-width:none;-ms-overflow-style:none}
+.wscroll::-webkit-scrollbar{display:none}
+.witem{color:#e5e7eb;font-weight:700}.witem b{color:#4ade80}
 .tm{background:#22c55e;color:#061209;font-weight:800;padding:3px 9px;border-radius:7px}
 .stage{margin:8px 12px;padding:12px 10px;border-radius:14px;background:radial-gradient(circle at top,#1c2430 0%,#12161d 75%);border:1px solid #262d38;text-align:center}
 .ball{width:62px;height:62px;line-height:54px;border-radius:50%;margin:0 auto 10px;background:radial-gradient(circle at 30% 30%,#4ade80,#16a34a);color:#061209;font-size:22px;font-weight:900;border:4px solid #86efac;box-shadow:0 0 0 3px rgba(74,222,128,0.28)}
@@ -908,6 +1053,7 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
 .nb{background:none;border:none;color:#9ca3af;font-weight:700;font-size:11px}.nb.active{color:#4ade80}
 </style></head><body>
 <div class="top"><strong style="color:#4ade80">⚡ ETHIO FAST KENO</strong><div class="pill">Balance: <span id="bal">0.00</span> ETB</div></div>
+<div class="wbar"><span class="wbadge">🏆 TOP WINNERS</span><div class="wscroll" id="top-winners-bar"><span class="witem">Loading top winners...</span></div></div>
 <div class="sub"><div>Picks: <strong id="cnt">0</strong>/10 | ID: <strong id="uid-lbl">-</strong></div><div class="tm" id="tm">01:00</div></div>
 
 <div id="p-game" class="panel active">
@@ -956,9 +1102,10 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
 </div>
 
 <div id="p-hist" class="panel">
-  <div class="box"><strong>💳 Recent Deposits (Last 3)</strong><div id="deplist">No deposits yet.</div></div>
-  <div class="box"><strong>📜 Recent Bets (Last 3)</strong><div id="hlist">No bet history yet.</div></div>
-  <div class="box"><strong>🎲 Recent Rounds (Last 3 — 20 Numbers)</strong><div id="ghlist">No completed rounds yet.</div></div>
+  <div class="box"><strong>💳 Deposit History (Last 20)</strong><div id="deplist">No deposits yet.</div></div>
+  <div class="box"><strong>💸 Withdraw History (Last 20)</strong><div id="hwlist">No withdraw history yet.</div></div>
+  <div class="box"><strong>🎟️ Ticket / Bet History (Last 20)</strong><div id="hlist">No bet history yet.</div></div>
+  <div class="box"><strong>🎲 Drawn Numbers History (Last 20 Rounds)</strong><div id="ghlist">No completed rounds yet.</div></div>
 </div>
 
 <div id="p-wallet" class="panel">
@@ -1178,19 +1325,26 @@ function cancelDepositStep2(){
   document.getElementById("dt").value="";
   document.getElementById("dmsg").textContent="";
 }
+function calcTicketMaxWin(tk){
+  if(typeof tk.max_win==="number" && tk.max_win>0)return tk.max_win;
+  const tbl=PT[(tk.picks||[]).length]||{};
+  const mx=Math.max(0,...Object.values(tbl));
+  return Number(tk.bet||0)*mx;
+}
 function renderTickets(){
   const wrap=document.getElementById("tickets-list");
   document.getElementById("tcount").textContent=tickets.length;
   if(!tickets.length){wrap.innerHTML='<div style="color:#9ca3af;margin-top:6px">No tickets placed in this round yet.</div>';return;}
   wrap.innerHTML=tickets.map(tk=>{
-    let stHtml='<span class="st-wait">Pending</span>';
+    const potWin=calcTicketMaxWin(tk);
+    let stHtml=`<span style="color:#4ade80;font-weight:800">Win: ${potWin.toFixed(2)} ETB</span> | <span class="st-wait">Pending</span>`;
     let cls="tcard";
     if(roundDone){
       if(Number(tk.payout||0)>0){stHtml=`<span class="st-win">Won ${Number(tk.payout).toFixed(2)} ETB</span>`;cls+=" won-card";}
-      else{stHtml='<span class="st-lose">Please try again</span>';}
+      else{stHtml=`<span style="color:#9ca3af">Max: ${potWin.toFixed(2)} ETB</span> | <span class="st-lose">Please try again</span>`;}
     }
     return `<div class="${cls}">
-      <div class="tcard-top"><span><b>${tk.player}</b></span><span>Bet <b>${Number(tk.bet).toFixed(0)} ETB</b> | ${stHtml}</span></div>
+      <div class="tcard-top"><span><b>${tk.player}</b> • Bet <b>${Number(tk.bet).toFixed(0)} ETB</b></span><span>${stHtml}</span></div>
       <div class="tnums">${tk.picks.map(n=>`<span class="tnum${drawnSoFar.has(n)?" matched":""}">${n}</span>`).join("")}</div>
     </div>`;
   }).join("");
@@ -1224,11 +1378,18 @@ async function load(){
       }
     }
     renderTickets();
-    const depArr=(d.deposits||[]).slice(-3).reverse();
+    const twBar=document.getElementById("top-winners-bar");
+    if(twBar && Array.isArray(d.top_winners) && d.top_winners.length){
+      twBar.innerHTML=d.top_winners.map((w,idx)=>`<span class="witem">#${idx+1} ID <b>${w.player}</b> won <b>${Number(w.amount||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} ETB</b></span>`).join(" • ");
+    }
+    const depArr=(d.deposits||[]).slice(-20).reverse();
     document.getElementById("deplist").innerHTML=depArr.length?depArr.map(x=>`<div style="padding:5px 0;border-bottom:1px solid #232934"><b>${Number(x.amount||0).toFixed(2)} ETB</b> | ${x.method} | ${x.tx} | ${x.date_label||""}</div>`).join(""):"No deposits yet.";
-    const betArr=(d.bets||[]).slice(-3).reverse();
-    document.getElementById("hlist").innerHTML=betArr.length?betArr.map(x=>`<div style="padding:5px 0;border-bottom:1px solid #232934">Round #${x.round||x.cycle||"-"} | Bet: <b>${x.bet} ETB</b> | Matches: <b>${x.matches}</b> | Win: <b style="color:#4ade80">${x.payout} ETB</b></div>`).join(""):"No bet history yet.";
-    const ghArr=(d.game_history||[]).slice(0,3);
+    const wdHistArr=(d.wds||[]).slice(-20).reverse();
+    const hwEl=document.getElementById("hwlist");
+    if(hwEl)hwEl.innerHTML=wdHistArr.length?wdHistArr.map(w=>`<div style="padding:5px 0;border-bottom:1px solid #232934">${w.id} | <b>${Number(w.amount||0).toFixed(2)} ETB</b> | ${w.method} (${w.dest}) | <b>${w.status}</b></div>`).join(""):"No withdraw history yet.";
+    const betArr=(d.bets||[]).slice(-20).reverse();
+    document.getElementById("hlist").innerHTML=betArr.length?betArr.map(x=>`<div style="padding:6px 0;border-bottom:1px solid #232934"><div>Round #${x.round||x.cycle||"-"} | Bet: <b>${x.bet} ETB</b> | Matches: <b>${x.matches}</b> | Win: <b style="color:#4ade80">${x.payout} ETB</b></div>${(x.picks&&x.picks.length)?`<div style="margin-top:3px;font-size:11px;color:#9ca3af">Picks: ${x.picks.join(", ")}</div>`:""}</div>`).join(""):"No bet history yet.";
+    const ghArr=(d.game_history||[]).slice(0,20);
     document.getElementById("ghlist").innerHTML=ghArr.length?ghArr.map(g=>`<div style="padding:7px 0;border-bottom:1px solid #232934"><div style="color:#4ade80;font-weight:800;margin-bottom:4px">Round #${g.round} <span style="color:#9ca3af;font-weight:400">(${(g.drawn||[]).length} numbers)</span></div><div style="display:flex;flex-wrap:wrap;gap:4px">${(g.drawn||[]).map(n=>`<span class="tnum">${n}</span>`).join("")}</div></div>`).join(""):"No completed rounds yet.";
     document.getElementById("wlist").innerHTML=d.wds.length?d.wds.slice().reverse().map(w=>`<div style="padding:6px 0;border-bottom:1px solid #2b303b">${w.id} | ${w.method} (${w.dest}) | ${w.amount} ETB | <b>${w.status}</b>${w.status==="Pending"?`<br><button class="appb" onclick="appw('${w.id}')">Approve (Complete)</button>`:""}</div>`).join(""):"No withdraw requests yet.";
   }catch(e){}
@@ -1461,13 +1622,15 @@ def webhook():
       already_claimed = bool(
           u.get("registered")
           or u.get("bonus_claimed")
+          or u.get("claimed_10_bonus")
           or uid in CLAIMED_BONUS_USERS
       )
       if not already_claimed:
         u["registered"] = True
         u["bonus_claimed"] = True
+        u["claimed_10_bonus"] = True
         CLAIMED_BONUS_USERS.add(uid)
-        u["balance"] = round(u["balance"] + 10.0, 2)
+        u["balance"] = round(float(u.get("balance", 0.0) or 0.0) + 10.0, 2)
         inviter_id = (u.get("referred_by") or REFERRED_USERS.get(uid) or "").strip()
         if (
             inviter_id
@@ -1484,9 +1647,16 @@ def webhook():
           )
         save_persistent_state()
         tg_answer_cb(cb_id, "Registration complete! 10.00 ETB one-time bonus credited.")
+        ref_status = "Yes (+10.00 ETB credited to inviter)" if (u.get("ref_rewarded")) else "No"
         tg(
             uid,
-            f"✅ Registration verified and completed!\n🎁 You received a one-time 10.00 ETB welcome bonus.\n💰 Your Balance: {u['balance']:.2f} ETB",
+            "✅ Registration Verified & Completed!\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 User ID: {uid}\n"
+            "🎁 Welcome Bonus: +10.00 ETB\n"
+            f"🤝 Referral Bonus Applied: {ref_status}\n"
+            f"💰 Current Balance: {u['balance']:.2f} ETB\n"
+            "🎮 Tap 'Play' below to start playing!",
             main_reply_kb(uid, base_url),
         )
       else:
@@ -1695,15 +1865,17 @@ def webhook():
     already_registered = bool(
         u.get("registered")
         or u.get("bonus_claimed")
+        or u.get("claimed_10_bonus")
         or uid in CLAIMED_BONUS_USERS
     )
     if already_registered:
       u["registered"] = True
       u["bonus_claimed"] = True
+      u["claimed_10_bonus"] = True
       CLAIMED_BONUS_USERS.add(uid)
       save_persistent_state()
-    elif len(parts) == 2 and parts[1].startswith("ref_"):
-      inviter_id = parts[1][4:].strip()
+    elif len(parts) == 2 and parts[1].strip().startswith("ref_"):
+      inviter_id = parts[1].strip()[4:].strip()
       if (
           inviter_id
           and inviter_id != uid
@@ -1715,10 +1887,17 @@ def webhook():
         REFERRED_USERS[uid] = inviter_id
         save_persistent_state()
     if not already_registered:
+      ref_note = (
+          "\n🎁 You joined via a referral link! Complete registration below to claim your 10.00 ETB bonus."
+          if (u.get("referred_by") or REFERRED_USERS.get(uid))
+          else ""
+      )
       tg(
           uid,
-          "Welcome to ETHIO FAST KENO!\n\n"
-          "Tap below to register with your Telegram account and claim your one-time 10.00 ETB welcome bonus.",
+          "Welcome to ETHIO FAST KENO!\n"
+          "━━━━━━━━━━━━━━━━━━━━\n"
+          "Please register first to activate your account and claim your one-time 10.00 ETB welcome bonus."
+          + ref_note,
           {
               "inline_keyboard": [[{
                   "text": "✅ Register & Claim 10 ETB Bonus",
@@ -1729,7 +1908,12 @@ def webhook():
     else:
       tg(
           uid,
-          f"Welcome back to ETHIO FAST KENO!\n💰 Your Balance: {u['balance']:.2f} ETB",
+          "Welcome back to ETHIO FAST KENO!\n"
+          "━━━━━━━━━━━━━━━━━━━━\n"
+          f"👤 User ID: {uid}\n"
+          "✅ Status: Registered\n"
+          f"💰 Balance: {u['balance']:.2f} ETB\n"
+          "🎮 Tap 'Play' below to open the game.",
           main_reply_kb(uid, base_url),
       )
     return jsonify({"ok": True})
@@ -1753,17 +1937,13 @@ def webhook():
     return jsonify({"ok": True})
 
   if text in ("✉️ Invite Friends", "Invite Friends"):
-    bot_info_user = get_bot_username()
-    ref_link = (
-        f"https://t.me/{bot_info_user}?start=ref_{uid}"
-        if bot_info_user
-        else f"{base_url}/?ref={uid}"
-    )
+    bot_info_user = get_bot_username() or "ethio_keno_play_26_bot"
+    ref_link = f"https://t.me/{bot_info_user}?start=ref_{uid}"
     share_url = (
         "https://t.me/share/url?"
         + requests.compat.urlencode({
             "url": ref_link,
-            "text": "Join me on ETHIO FAST KENO and play!",
+            "text": "Join ETHIO FAST KENO and register to get a 10 ETB bonus!",
         })
     )
     share_kb = {
@@ -1774,8 +1954,11 @@ def webhook():
     }
     tg(
         uid,
-        "🚀 Invite your friends! Tap the button below to share your referral link:\n"
-        f"{ref_link}",
+        "🚀 Invite your friends!\n\n"
+        "When your friend opens this link, taps Start, and completes registration:\n"
+        "• Your friend gets a 10.00 ETB welcome bonus\n"
+        "• You get a 10.00 ETB referral bonus\n\n"
+        f"Your Referral Link:\n{ref_link}",
         share_kb,
     )
     return jsonify({"ok": True})
@@ -1842,6 +2025,10 @@ def api_state():
           "player": e["player"],
           "picks": e["picks"],
           "bet": e["bet"],
+          "max_win": round(
+              float(e["bet"]) * max(PAYTABLE.get(len(e["picks"]), {}).values() or [0.0]),
+              2,
+          ),
           "payout": e["payout"] if show_result else 0.0,
       }
       for e in entries[-25:]
@@ -1856,9 +2043,10 @@ def api_state():
       "balance": u["balance"],
       "registered": u["registered"],
       "round_num": cycle_to_round_num(c_num),
-      "deposits": u.get("deposits", [])[-3:],
-      "bets": u.get("bets", [])[-3:],
-      "game_history": list(reversed(GAME_HISTORY[-3:])),
+      "deposits": u.get("deposits", [])[-20:],
+      "bets": u.get("bets", [])[-20:],
+      "game_history": list(reversed(GAME_HISTORY[-20:])),
+      "top_winners": get_top_winners_feed(),
       "tickets": public_tickets,
       "my_ticket": my_entry,
       "drawn": drawn[:shown_cnt],
@@ -1916,6 +2104,10 @@ def api_reserve_bet():
           "player": e["player"],
           "picks": e["picks"],
           "bet": e["bet"],
+          "max_win": round(
+              float(e["bet"]) * max(PAYTABLE.get(len(e["picks"]), {}).values() or [0.0]),
+              2,
+          ),
           "payout": 0.0,
       }
       for e in ROUND_BETS[c_num][-25:]
@@ -1943,6 +2135,10 @@ def api_play():
           "player": e["player"],
           "picks": e["picks"],
           "bet": e["bet"],
+          "max_win": round(
+              float(e["bet"]) * max(PAYTABLE.get(len(e["picks"]), {}).values() or [0.0]),
+              2,
+          ),
           "payout": e["payout"],
       }
       for e in entries[-25:]
