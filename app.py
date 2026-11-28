@@ -79,25 +79,37 @@ TOP_WINNERS = []  # list of dicts: {"player": str, "amount": float, "round": int
 
 
 def get_top_winners_feed():
-  # Combine real big winners with occasional showcase winners (including ~10,000 ETB entries)
-  # so the top banner stays lively even when there are no real winners yet.
+  # Mix real winners with varied showcase winners (e.g. 8,000, 9,000, 10,000, 12,000 ETB)
+  # rotating every ~2 minutes and replacing/complementing real winners so the
+  # horizontal stream stays lively and never looks empty or static.
   real_sorted = sorted(
       [w for w in TOP_WINNERS if float(w.get("amount", 0)) > 0],
       key=lambda x: float(x.get("amount", 0)),
       reverse=True,
-  )[:5]
-  slot_bucket = int(time.time() // 180)
+  )[:6]
+  slot_bucket = int(time.time() // 120)
   rng = random.Random(f"ethio-keno-top-winners-{slot_bucket}")
-  prefixes = ["6***4", "7***9", "5***2", "8***1", "9***7", "1***8", "3***5", "4***6", "2***3"]
-  amounts = [10000.0, 12500.0, 8400.0, 6000.0, 4500.0, 3200.0, 2500.0, 1800.0, 10000.0]
+  prefixes = [
+      "0920***99", "0936***09", "0979***03", "0978***88",
+      "0957***30", "0972***12", "0703***75", "0980***94",
+      "0975***72", "0956***39", "0983***30", "0908***61",
+  ]
+  amounts = [
+      10000.0, 12000.0, 9000.0, 8000.0,
+      10000.0, 8500.0, 9500.0, 12000.0,
+      8000.0, 10000.0, 9000.0, 11000.0,
+  ]
   rng.shuffle(prefixes)
   rng.shuffle(amounts)
 
-  # Keep real winners, and inject showcase entries when real list is short or periodically
-  merged = list(real_sorted[:3]) if len(real_sorted) >= 4 else list(real_sorted)
+  merged = []
+  # Include up to 2 real winners so real wins appear alongside showcase entries
+  for rw in real_sorted[:2]:
+    merged.append(rw)
+
   used_players = {x["player"] for x in merged}
   for p_id, amt in zip(prefixes, amounts):
-    if len(merged) >= 6:
+    if len(merged) >= 8:
       break
     if p_id in used_players:
       continue
@@ -108,8 +120,7 @@ def get_top_winners_feed():
         "round": max(1, cycle_to_round_num(current_cycle_state()["cycle_num"]) - rng.randint(1, 15)),
         "ts": int(time.time()) - rng.randint(30, 900),
     })
-  merged.sort(key=lambda x: float(x.get("amount", 0)), reverse=True)
-  return merged[:6]
+  return merged[:8]
 
 
 def load_persistent_state():
@@ -1028,15 +1039,14 @@ PAGE = """<!DOCTYPE html>
 .top{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#171b22;border-bottom:1px solid #262c36}
 .pill{background:#222834;padding:5px 10px;border-radius:99px;font-size:12px;font-weight:700;color:#4ade80}
 .sub{display:flex;justify-content:space-between;align-items:center;padding:7px 12px;background:#13171d;font-size:12px;color:#9ca3af}
-.wbar{display:flex;align-items:center;gap:8px;padding:7px 10px;background:linear-gradient(90deg,#1e1b4b 0%,#0f172a 48%,#1e1b4b 100%);border-bottom:1px solid #334155;font-size:12.5px;overflow:hidden;position:relative}
-.wbadge{background:linear-gradient(135deg,#f59e0b,#d97706);color:#111827;font-weight:900;padding:4px 9px;border-radius:7px;white-space:nowrap;font-size:11.5px;z-index:2;box-shadow:0 0 10px rgba(245,158,11,0.45)}
-.wmarquee{flex:1;overflow:hidden;white-space:nowrap;position:relative}
-.wtrack{display:inline-flex;align-items:center;white-space:nowrap;will-change:transform;animation:wscrollAnim 22s linear infinite}
-.wtrack:hover{animation-play-state:paused}
-.wset{display:inline-flex;align-items:center;gap:12px;padding-right:12px}
+.wbar{display:flex;align-items:center;gap:8px;padding:7px 10px;background:linear-gradient(90deg,#111827 0%,#0f172a 50%,#111827 100%);border-bottom:1px solid #262e3d;font-size:12px;overflow:hidden;position:relative}
+.wbadge{background:linear-gradient(135deg,#f59e0b,#d97706);color:#111827;font-weight:900;padding:5px 9px;border-radius:7px;white-space:nowrap;font-size:11px;z-index:2;flex-shrink:0}
+.wmarquee{flex:1;overflow:hidden;white-space:nowrap;position:relative;min-width:0}
+.wtrack{display:inline-flex;align-items:center;white-space:nowrap;will-change:transform;animation:wscrollAnim 38s linear infinite}
+.wset{display:inline-flex;align-items:center;gap:10px;padding-right:10px;flex-shrink:0}
 @keyframes wscrollAnim{0%{transform:translate3d(0,0,0)}100%{transform:translate3d(-50%,0,0)}}
-.witem{display:inline-flex;align-items:center;gap:6px;background:rgba(15,23,42,0.92);border:1px solid rgba(250,204,21,0.45);padding:4px 11px;border-radius:99px;color:#f8fafc;font-size:12.5px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.25)}
-.witem .rk{color:#facc15;font-weight:900}.witem .pid{color:#38bdf8;font-weight:800}.witem .amt{color:#4ade80;font-weight:900}
+.witem{display:inline-flex;align-items:center;gap:6px;background:#161d29;border:1px solid #2b3548;padding:4px 10px;border-radius:8px;color:#f8fafc;font-size:12px;font-weight:700;flex-shrink:0}
+.witem .rk{color:#fbbf24;font-weight:900}.witem .pid{color:#9ca3af;font-weight:700}.witem .amt{color:#4ade80;font-weight:900}
 .tm{background:#22c55e;color:#061209;font-weight:800;padding:3px 9px;border-radius:7px}
 .stage{margin:8px 12px;padding:12px 10px;border-radius:14px;background:radial-gradient(circle at top,#1c2430 0%,#12161d 75%);border:1px solid #262d38;text-align:center}
 .ball{width:62px;height:62px;line-height:54px;border-radius:50%;margin:0 auto 10px;background:radial-gradient(circle at 30% 30%,#4ade80,#16a34a);color:#061209;font-size:22px;font-weight:900;border:4px solid #86efac;box-shadow:0 0 0 3px rgba(74,222,128,0.28)}
