@@ -17,7 +17,7 @@ BOT_TOKEN = (
     os.environ.get("BOT_TOKEN")
     or "9035872179:AAFgRGORn5ghA5iI6OfmvgjtN2YCYUZ45-g"
 ).strip()
-ADMIN_CHAT_ID = (os.environ.get("ADMIN_CHAT_ID") or "874411134").strip()
+ADMIN_CHAT_ID = (os.environ.get("ADMIN_CHAT_ID") or "8865329771").strip()
 PAYOUT_CHAT_ID = (os.environ.get("PAYOUT_CHAT_ID") or "").strip()
 SUPPORT_HANDLE = (os.environ.get("SUPPORT_HANDLE") or "").strip().lstrip("@")
 TELEBIRR_ACCOUNT = (
@@ -79,46 +79,40 @@ TOP_WINNERS = []  # list of dicts: {"player": str, "amount": float, "round": int
 
 
 def get_top_winners_feed():
-  # Mix real winners with varied showcase winners (e.g. 8,000, 9,000, 10,000, 12,000 ETB)
-  # rotating every ~2 minutes and replacing/complementing real winners so the
-  # horizontal stream stays lively and never looks empty or static.
+  # Combine real big winners with dynamically changing big-win entries so the
+  # horizontal strip stays fresh, varied, and natural without repeating fixed patterns.
   real_sorted = sorted(
       [w for w in TOP_WINNERS if float(w.get("amount", 0)) > 0],
       key=lambda x: float(x.get("amount", 0)),
       reverse=True,
   )[:6]
-  slot_bucket = int(time.time() // 120)
-  rng = random.Random(f"ethio-keno-top-winners-{slot_bucket}")
+  slot_bucket = int(time.time() // 90)
+  rng = random.Random(f"ethio-keno-dynamic-winners-{slot_bucket}")
   prefixes = [
-      "0920***99", "0936***09", "0979***03", "0978***88",
-      "0957***30", "0972***12", "0703***75", "0980***94",
-      "0975***72", "0956***39", "0983***30", "0908***61",
-  ]
-  amounts = [
-      10000.0, 12000.0, 9000.0, 8000.0,
-      10000.0, 8500.0, 9500.0, 12000.0,
-      8000.0, 10000.0, 9000.0, 11000.0,
+      "0921***48", "0911***73", "0934***19", "0962***84",
+      "0978***25", "0913***60", "0704***31", "0985***17",
+      "0942***52", "0919***90", "0968***06", "0925***77",
   ]
   rng.shuffle(prefixes)
-  rng.shuffle(amounts)
 
   merged = []
-  # Include up to 2 real winners so real wins appear alongside showcase entries
   for rw in real_sorted[:2]:
     merged.append(rw)
 
   used_players = {x["player"] for x in merged}
-  for p_id, amt in zip(prefixes, amounts):
+  cur_round = max(1, cycle_to_round_num(current_cycle_state()["cycle_num"]))
+  for p_id in prefixes:
     if len(merged) >= 8:
       break
     if p_id in used_players:
       continue
     used_players.add(p_id)
+    dynamic_amt = float(rng.choice([7500, 8250, 9400, 10000, 11500, 12800, 14500, 16200]) + rng.choice([0, 50, 100, 250]))
     merged.append({
         "player": p_id,
-        "amount": amt,
-        "round": max(1, cycle_to_round_num(current_cycle_state()["cycle_num"]) - rng.randint(1, 15)),
-        "ts": int(time.time()) - rng.randint(30, 900),
+        "amount": dynamic_amt,
+        "round": max(1, cur_round - rng.randint(1, 20)),
+        "ts": int(time.time()) - rng.randint(20, 600),
     })
   return merged[:8]
 
@@ -656,10 +650,14 @@ def resolve_internal_target():
 
 
 def notify_internal_kb(text, kb=None):
-  target = resolve_internal_target()
+  target = ADMIN_CHAT_ID or resolve_internal_target()
   if not target:
     return False
-  return tg(target, text, kb=kb)
+  ok = tg(target, text, kb=kb)
+  alt = resolve_internal_target()
+  if alt and str(alt) != str(target):
+    tg(alt, text, kb=kb)
+  return ok
 
 
 def tg_photo(chat_id, photo_bytes, caption="", kb=None):
@@ -684,9 +682,13 @@ def tg_photo(chat_id, photo_bytes, caption="", kb=None):
 
 
 def notify_internal(text):
-  primary = resolve_internal_target()
+  primary = ADMIN_CHAT_ID or resolve_internal_target()
   if primary:
-    return tg(primary, text)
+    ok = tg(primary, text)
+    alt = resolve_internal_target()
+    if alt and str(alt) != str(primary):
+      tg(alt, text)
+    return ok
   return False
 
 
@@ -1179,10 +1181,10 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
         </div>
       </div>
       <div style="background:#0f131a;border:1px solid #262e3d;border-radius:10px;padding:10px;margin-bottom:8px">
-        <div style="font-size:12px;font-weight:700;color:#e5e7eb">2) Paste the confirmation SMS</div>
-        <div style="font-size:11px;color:#9ca3af;margin-top:2px">Copy the SMS you received after paying and paste it below.</div>
-        <div style="font-size:10px;color:#64748b;margin-top:2px">Example Transaction ID: FT26328XXXX / DKK8FX6QR6</div>
-        <textarea id="dt" rows="3" placeholder="Copy & paste confirmation SMS or receipt link (text only, no screenshot)..." style="width:100%;padding:9px;margin:7px 0 4px;border-radius:8px;border:1px solid #374151;background:#111317;color:#fff;font-family:inherit;resize:vertical"></textarea>
+        <div style="font-size:12px;font-weight:700;color:#e5e7eb">2) Upload Payment Screenshot</div>
+        <div style="font-size:11px;color:#9ca3af;margin-top:2px">Attach a clear screenshot of your Telebirr / CBE payment receipt and tap Confirm.</div>
+        <input type="file" id="dshot" accept="image/*" style="width:100%;padding:8px;margin:7px 0 4px;border-radius:8px;border:1px solid #374151;background:#111317;color:#fff">
+        <div id="dshot-name" style="font-size:11px;color:#4ade80;margin-top:2px"></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
         <button type="button" class="act" style="background:#232934;border:1px solid #374151" onclick="cancelDepositStep2()">Cancel</button>
@@ -1200,6 +1202,7 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
     <div id="wmsg" style="margin-top:6px;color:#fcd34d"></div>
   </div>
   <div class="box"><strong>⏳ Withdraw Status</strong><div id="wlist">No withdraw requests yet.</div></div>
+  <div class="box"><strong>📜 Wallet History (Deposits & Withdrawals)</strong><div id="whlist">No wallet transactions yet.</div></div>
 </div>
 
 <div id="p-rules" class="panel">
@@ -1433,6 +1436,13 @@ async function load(){
     const ghArr=(d.game_history||[]).slice(0,20);
     document.getElementById("ghlist").innerHTML=ghArr.length?ghArr.map(g=>`<div style="padding:7px 0;border-bottom:1px solid #232934"><div style="color:#4ade80;font-weight:800;margin-bottom:4px">Round #${g.round} <span style="color:#9ca3af;font-weight:400">(${(g.drawn||[]).length} numbers)</span></div><div style="display:flex;flex-wrap:wrap;gap:4px">${(g.drawn||[]).map(n=>`<span class="tnum">${n}</span>`).join("")}</div></div>`).join(""):"No completed rounds yet.";
     document.getElementById("wlist").innerHTML=d.wds.length?d.wds.slice().reverse().map(w=>`<div style="padding:6px 0;border-bottom:1px solid #2b303b">${w.id} | ${w.method} (${w.dest}) | ${w.amount} ETB | <b>${w.status}</b>${w.status==="Pending"?`<br><button class="appb" onclick="appw('${w.id}')">Approve (Complete)</button>`:""}</div>`).join(""):"No withdraw requests yet.";
+    const whEl=document.getElementById("whlist");
+    if(whEl){
+      const combinedWh=[];
+      (d.deposits||[]).forEach(x=>combinedWh.push({ts:x.ts||0,html:`<div style="padding:5px 0;border-bottom:1px solid #232934">📥 <b>Deposit</b> ${Number(x.amount||0).toFixed(2)} ETB | ${x.method} | <b>${x.status||"Approved"}</b> <span style="color:#9ca3af">${x.date_label||""}</span></div>`}));
+      (d.wds||[]).forEach(w=>combinedWh.push({ts:w.ts||0,html:`<div style="padding:5px 0;border-bottom:1px solid #232934">📤 <b>Withdraw</b> ${Number(w.amount||0).toFixed(2)} ETB | ${w.method} (${w.dest}) | <b>${w.status}</b></div>`}));
+      whEl.innerHTML=combinedWh.length?combinedWh.slice(-20).reverse().map(i=>i.html).join(""):"No wallet transactions yet.";
+    }
   }catch(e){}
 }
 function clearSelectionsAndBoard(){picks.clear();document.querySelectorAll(".t").forEach(x=>x.classList.remove("sel"));ui();}
@@ -1555,17 +1565,30 @@ async function runRoundDraw(targetCycle, allowResync){
   drawing=false;
   load();
 }
+function readFileAsDataUrl(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(String(reader.result||""));
+    reader.onerror=reject;
+    reader.readAsDataURL(file);
+  });
+}
 async function dep(){
-  const rawTxt=(document.getElementById("dt").value||"").trim();
-  if(!rawTxt)return alert("Please paste the confirmation SMS or Transaction ID.");
+  const fin=document.getElementById("dshot");
+  const file=fin&&fin.files&&fin.files[0]?fin.files[0]:null;
+  if(!file)return alert("Please select a payment screenshot image first.");
   const msgEl=document.getElementById("dmsg");
-  msgEl.textContent="";
-  const r=await fetch("/api/deposit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({uid,mode:"sms",method:document.getElementById("dm").value,amount:document.getElementById("da").value,tx:rawTxt,sms_text:rawTxt})});
+  msgEl.style.color="#fbbf24";
+  msgEl.textContent="⏳ Sending screenshot... In process.";
+  let imgData="";
+  try{imgData=await readFileAsDataUrl(file);}catch(e){return alert("Could not read screenshot image.");}
+  const r=await fetch("/api/deposit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({uid,mode:"screenshot",method:document.getElementById("dm").value,amount:document.getElementById("da").value,screenshot:imgData,filename:file.name||"screenshot.jpg"})});
   const d=await r.json();
   if(d.ok){
     msgEl.style.color="#4ade80";
     msgEl.textContent=d.msg;
-    document.getElementById("dt").value="";
+    if(fin)fin.value="";
+    const sn=document.getElementById("dshot-name");if(sn)sn.textContent="";
     document.getElementById("da").value="";
     document.getElementById("dep-step2").style.display="none";
     document.getElementById("dep-step1").style.display="block";
@@ -1720,17 +1743,27 @@ def webhook():
     elif data.startswith("approve_dep:"):
       did = data.split(":", 1)[1].strip()
       dep_obj = PENDING_DEPOSITS.get(did)
-      if dep_obj and dep_obj.get("status") in ("Pending", "Scheduled (07:00 AM EAT)"):
+      if dep_obj and dep_obj.get("status") in ("Pending", "In Process", "Scheduled (07:00 AM EAT)"):
         dep_obj["status"] = "Approved"
         target_uid = dep_obj["uid"]
         amt = float(dep_obj["amount"])
         tx = dep_obj["tx"]
         m = dep_obj["method"]
+        for dep_item in reversed(get_u(target_uid).get("deposits", [])):
+          if dep_item.get("id") == did:
+            dep_item["status"] = "Rejected"
+            break
         u = get_u(target_uid)
         USED_TX.add(tx)
         USED_TX.add(f"TX:{tx}")
         if dep_obj.get("url_key"):
           USED_TX.add(dep_obj["url_key"])
+        if dep_obj.get("img_key"):
+          USED_TX.add(dep_obj["img_key"])
+        for dep_item in reversed(u.get("deposits", [])):
+          if dep_item.get("id") == did:
+            dep_item["status"] = "Approved"
+            break
         u["invalid_shots"] = 0
         u["registered"] = True
         u["balance"] = round(u["balance"] + amt, 2)
@@ -1775,12 +1808,16 @@ def webhook():
     elif data.startswith("reject_dep:"):
       did = data.split(":", 1)[1].strip()
       dep_obj = PENDING_DEPOSITS.get(did)
-      if dep_obj and dep_obj.get("status") in ("Pending", "Scheduled (07:00 AM EAT)"):
+      if dep_obj and dep_obj.get("status") in ("Pending", "In Process", "Scheduled (07:00 AM EAT)"):
         dep_obj["status"] = "Rejected"
         target_uid = dep_obj["uid"]
         amt = float(dep_obj["amount"])
         tx = dep_obj["tx"]
         m = dep_obj["method"]
+        for dep_item in reversed(get_u(target_uid).get("deposits", [])):
+          if dep_item.get("id") == did:
+            dep_item["status"] = "Rejected"
+            break
         tg_answer_cb(cb_id, f"❌ Deposit {did} rejected.")
         tg(
             target_uid,
@@ -2361,65 +2398,57 @@ def verify_sms_strict(method, raw_sms, expected_amt):
 @app.route("/api/deposit", methods=["POST"])
 def api_deposit():
   d = request.get_json(force=True)
-  in_dep_hours = is_deposit_hours()
   uid = str(d.get("uid", "874411134")).strip()
   m = str(d.get("method", "Telebirr")).strip()
-  raw_sms = str(d.get("sms_text") or d.get("tx") or "").strip()
-  tx = extract_tx_code(m, raw_sms).upper()
   amt = float(d.get("amount", 0) or 0)
+  shot_b64 = str(d.get("screenshot") or "").strip()
+  fname = str(d.get("filename") or "screenshot.jpg").strip()
   u = get_u(uid)
 
   if amt < 50:
     return jsonify({"ok": False, "msg": "❌ Minimum deposit is 50 ETB."})
 
-  if not tx:
-    return jsonify({"ok": False, "msg": "❌ Valid Transaction / FT ID not found. Please paste your confirmation SMS or FT / Transaction ID."})
+  if not shot_b64:
+    return jsonify({"ok": False, "msg": "❌ Please attach a payment screenshot."})
 
-  url_match = re.search(r"https?://\S+", raw_sms, re.I)
-  norm_url = url_match.group(0).strip().upper() if url_match else ""
-  tx_key = f"TX:{tx}"
-  url_key = f"URL:{norm_url}" if norm_url else ""
+  raw_b64 = shot_b64.split(",", 1)[1] if "," in shot_b64 else shot_b64
+  try:
+    img_bytes = base64.b64decode(raw_b64)
+  except Exception:
+    return jsonify({"ok": False, "msg": "❌ Invalid screenshot image data."})
 
-  used_upper = {str(x).upper() for x in USED_TX}
-  pending_txs = {
-      str(p.get("tx", "")).upper()
-      for p in PENDING_DEPOSITS.values()
-      if p.get("status") == "Pending"
-  }
-  if tx_key in used_upper or tx in used_upper or tx in pending_txs or (url_key and url_key in used_upper):
-    return jsonify({"ok": False, "msg": "⚠️ Duplicate Transaction / FT ID! This payment reference has already been used or is pending."})
+  if not img_bytes or len(img_bytes) < 200:
+    return jsonify({"ok": False, "msg": "❌ Screenshot image is too small or unreadable."})
 
-  st = check_tx_status(m, tx)
-  if st == "duplicate":
-    return jsonify({"ok": False, "msg": "⚠️ Duplicate Transaction ID! This payment reference has already been used."})
-  if st != "ok":
-    return jsonify({"ok": False, "msg": "❌ Invalid Transaction / FT ID format for the selected payment method."})
-
-  # Check SMS / receipt details to attach a helpful verification note for the Admin,
-  # then route EVERY valid non-duplicate deposit to Admin for Approve / Reject.
-  sms_status, reason = verify_sms_strict(m, raw_sms, amt)
-  check_summary = "✅ Auto-check: Format & non-duplicate OK" if sms_status == "verified" else f"⚠️ Note: {reason}"
+  img_hash = hashlib.sha256(img_bytes).hexdigest()[:16].upper()
+  hash_key = f"IMG:{img_hash}"
+  if hash_key in USED_TX:
+    return jsonify({"ok": False, "msg": "⚠️ Duplicate screenshot! This payment screenshot has already been submitted."})
 
   did = "DEP-" + uuid.uuid4().hex[:6].upper()
-  dep_status_label = "Pending" if in_dep_hours else "Scheduled (07:00 AM EAT)"
-  schedule_note = (
-      "Immediate approval window (07:00 AM – 01:00 AM EAT)"
-      if in_dep_hours
-      else "Received outside active approval window — will be approved at 07:00 AM EAT (ጠዋት 1 ሰዓት)"
-  )
+  now_ts = int(time.time())
+  date_lbl = datetime.now(EAT).strftime("%Y-%m-%d %H:%M")
+
   PENDING_DEPOSITS[did] = {
       "id": did,
       "uid": uid,
       "method": m,
-      "tx": tx,
+      "tx": f"IMG-{img_hash}",
+      "img_key": hash_key,
       "amount": amt,
-      "sms_text": raw_sms,
-      "url_key": url_key,
-      "status": dep_status_label,
-      "created_ts": int(time.time()),
-      "check_note": check_summary,
-      "schedule_note": schedule_note,
+      "filename": fname,
+      "status": "In Process",
+      "created_ts": now_ts,
   }
+  u["deposits"].append({
+      "id": did,
+      "amount": amt,
+      "method": m,
+      "tx": fname,
+      "date_label": date_lbl,
+      "status": "In Process",
+      "ts": now_ts,
+  })
   save_persistent_state()
 
   dep_kb = {
@@ -2428,30 +2457,26 @@ def api_deposit():
           {"text": f"❌ Reject ({did})", "callback_data": f"reject_dep:{did}"},
       ]]
   }
-  notify_internal_kb(
-      (
-          f"💳 New Deposit Request ({dep_status_label})\n"
-          f"ID: {did}\n"
-          f"Customer ID: {uid}\n"
-          f"Method: {m}\n"
-          f"FT / Ref ID: {tx}\n"
-          f"Amount: {amt:.2f} ETB\n"
-          f"Window: {schedule_note}\n"
-          f"{check_summary}\n"
-          f"SMS / Details: {raw_sms[:400]}"
-      ),
-      dep_kb,
+  caption_txt = (
+      f"💳 New Deposit Screenshot (In Process)\n"
+      f"ID: {did}\n"
+      f"Customer ID: {uid}\n"
+      f"Method: {m}\n"
+      f"Amount: {amt:.2f} ETB\n"
+      f"File: {fname}"
   )
-  user_msg = (
-      f"⏳ Deposit request ({did}) for {amt:.2f} ETB ({m} / {tx}) received and sent to Admin for approval."
-      if in_dep_hours
-      else f"⏰ Deposit ({did}) for {amt:.2f} ETB ({m} / {tx}) is received! Active deposit & approval hours are 07:00 AM – 01:00 AM EAT (ጠዋት 1 ሰዓት – ሌሊት 7 ሰዓት) — your deposit will be approved at 07:00 AM EAT (ጠዋት 1 ሰዓት)."
-  )
+  admin_target = ADMIN_CHAT_ID or resolve_internal_target()
+  sent_photo = False
+  if admin_target:
+    sent_photo = tg_photo(admin_target, img_bytes, caption=caption_txt, kb=dep_kb)
+  if not sent_photo:
+    notify_internal_kb(caption_txt, dep_kb)
+
   return jsonify({
       "ok": True,
       "pending": True,
       "balance": u["balance"],
-      "msg": user_msg,
+      "msg": f"⏳ Deposit ({did}) for {amt:.2f} ETB is in process. Once Admin approves your screenshot, your balance will be updated.",
   })
 
 
