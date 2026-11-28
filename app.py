@@ -79,21 +79,19 @@ TOP_WINNERS = []  # list of dicts: {"player": str, "amount": float, "round": int
 
 
 def get_top_winners_feed():
-  # Combine real big winners with dynamically changing big-win entries so the
-  # horizontal strip stays fresh, varied, and natural without repeating fixed patterns.
   real_sorted = sorted(
       [w for w in TOP_WINNERS if float(w.get("amount", 0)) > 0],
       key=lambda x: float(x.get("amount", 0)),
       reverse=True,
   )[:6]
-  slot_bucket = int(time.time() // 90)
-  rng = random.Random(f"ethio-keno-dynamic-winners-{slot_bucket}")
-  prefixes = [
-      "0921***48", "0911***73", "0934***19", "0962***84",
-      "0978***25", "0913***60", "0704***31", "0985***17",
-      "0942***52", "0919***90", "0968***06", "0925***77",
-  ]
-  rng.shuffle(prefixes)
+  slot_bucket = int(time.time() // 30)
+  rng = random.Random(f"ethio-keno-live-winners-{slot_bucket}")
+  reg_ids = [mask_uid(k) for k, v in USERS.items() if isinstance(v, dict) and v.get("registered")]
+  pool_ids = list(dict.fromkeys(reg_ids + [
+      "6***4", "6***c", "6***2", "6***b", "6***8", "6***5",
+      "6***9", "6***7", "6***0", "8***4", "7***2", "5***9",
+  ]))
+  rng.shuffle(pool_ids)
 
   merged = []
   for rw in real_sorted[:2]:
@@ -101,20 +99,20 @@ def get_top_winners_feed():
 
   used_players = {x["player"] for x in merged}
   cur_round = max(1, cycle_to_round_num(current_cycle_state()["cycle_num"]))
-  for p_id in prefixes:
-    if len(merged) >= 8:
+  for p_id in pool_ids:
+    if len(merged) >= 12:
       break
     if p_id in used_players:
       continue
     used_players.add(p_id)
-    dynamic_amt = float(rng.choice([7500, 8250, 9400, 10000, 11500, 12800, 14500, 16200]) + rng.choice([0, 50, 100, 250]))
+    dynamic_amt = float(rng.choice([666.66, 768, 1000, 3000, 10000, 15000, 30000]))
     merged.append({
         "player": p_id,
         "amount": dynamic_amt,
-        "round": max(1, cur_round - rng.randint(1, 20)),
-        "ts": int(time.time()) - rng.randint(20, 600),
+        "round": max(1, cur_round - rng.randint(1, 15)),
+        "ts": int(time.time()) - rng.randint(15, 300),
     })
-  return merged[:8]
+  return merged[:12]
 
 
 def load_persistent_state():
@@ -650,14 +648,10 @@ def resolve_internal_target():
 
 
 def notify_internal_kb(text, kb=None):
-  target = ADMIN_CHAT_ID or resolve_internal_target()
+  target = ADMIN_CHAT_ID or "8865329771"
   if not target:
     return False
-  ok = tg(target, text, kb=kb)
-  alt = resolve_internal_target()
-  if alt and str(alt) != str(target):
-    tg(alt, text, kb=kb)
-  return ok
+  return tg(target, text, kb=kb)
 
 
 def tg_photo(chat_id, photo_bytes, caption="", kb=None):
@@ -682,13 +676,9 @@ def tg_photo(chat_id, photo_bytes, caption="", kb=None):
 
 
 def notify_internal(text):
-  primary = ADMIN_CHAT_ID or resolve_internal_target()
+  primary = ADMIN_CHAT_ID or "8865329771"
   if primary:
-    ok = tg(primary, text)
-    alt = resolve_internal_target()
-    if alt and str(alt) != str(primary):
-      tg(alt, text)
-    return ok
+    return tg(primary, text)
   return False
 
 
@@ -1041,14 +1031,14 @@ PAGE = """<!DOCTYPE html>
 .top{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#171b22;border-bottom:1px solid #262c36}
 .pill{background:#222834;padding:5px 10px;border-radius:99px;font-size:12px;font-weight:700;color:#4ade80}
 .sub{display:flex;justify-content:space-between;align-items:center;padding:7px 12px;background:#13171d;font-size:12px;color:#9ca3af}
-.wbar{display:flex;align-items:center;gap:8px;padding:7px 10px;background:linear-gradient(90deg,#111827 0%,#0f172a 50%,#111827 100%);border-bottom:1px solid #262e3d;font-size:12px;overflow:hidden;position:relative}
-.wbadge{background:linear-gradient(135deg,#f59e0b,#d97706);color:#111827;font-weight:900;padding:5px 9px;border-radius:7px;white-space:nowrap;font-size:11px;z-index:2;flex-shrink:0}
+.wbar{display:flex;align-items:center;gap:8px;padding:8px 10px;background:linear-gradient(90deg,#3b0764 0%,#064e3b 50%,#78350f 100%);border-bottom:2px solid #facc15;font-size:13px;overflow:hidden;position:relative;box-shadow:0 3px 14px rgba(250,204,21,0.35)}
+.wbadge{background:linear-gradient(135deg,#facc15,#fb923c);color:#090d12;font-weight:900;padding:5px 11px;border-radius:8px;white-space:nowrap;font-size:12px;z-index:3;flex-shrink:0;box-shadow:0 0 12px rgba(250,204,21,0.7);letter-spacing:0.3px}
 .wmarquee{flex:1;overflow:hidden;white-space:nowrap;position:relative;min-width:0}
-.wtrack{display:inline-flex;align-items:center;white-space:nowrap;will-change:transform;animation:wscrollAnim 38s linear infinite}
+.wtrack{display:inline-flex;align-items:center;white-space:nowrap;will-change:transform;animation:wscrollAnim 2.6s linear infinite}
 .wset{display:inline-flex;align-items:center;gap:10px;padding-right:10px;flex-shrink:0}
 @keyframes wscrollAnim{0%{transform:translate3d(0,0,0)}100%{transform:translate3d(-50%,0,0)}}
-.witem{display:inline-flex;align-items:center;gap:6px;background:#161d29;border:1px solid #2b3548;padding:4px 10px;border-radius:8px;color:#f8fafc;font-size:12px;font-weight:700;flex-shrink:0}
-.witem .rk{color:#fbbf24;font-weight:900}.witem .pid{color:#9ca3af;font-weight:700}.witem .amt{color:#4ade80;font-weight:900}
+.witem{display:inline-flex;align-items:center;gap:6px;background:linear-gradient(135deg,#1e1b4b,#065f46);border:1.5px solid #fde047;padding:5px 12px;border-radius:9px;color:#ffffff;font-size:13px;font-weight:900;flex-shrink:0;box-shadow:0 0 10px rgba(253,224,71,0.35)}
+.witem .rk{background:#facc15;color:#090d12;padding:1px 6px;border-radius:5px;font-weight:900;font-size:11px}.witem .pid{color:#67e8f9;font-weight:900}.witem .amt{color:#fde047;font-weight:900;text-shadow:0 0 8px rgba(253,224,71,0.6)}
 .tm{background:#22c55e;color:#061209;font-weight:800;padding:3px 9px;border-radius:7px}
 .stage{margin:8px 12px;padding:12px 10px;border-radius:14px;background:radial-gradient(circle at top,#1c2430 0%,#12161d 75%);border:1px solid #262d38;text-align:center}
 .ball{width:62px;height:62px;line-height:54px;border-radius:50%;margin:0 auto 10px;background:radial-gradient(circle at 30% 30%,#4ade80,#16a34a);color:#061209;font-size:22px;font-weight:900;border:4px solid #86efac;box-shadow:0 0 0 3px rgba(74,222,128,0.28)}
@@ -1095,6 +1085,7 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
     <div style="font-size:11px;color:#9ca3af;margin-bottom:6px">Drawn Numbers: <strong id="dprog">0 / 20</strong> | Max Win: <strong id="mwin" style="color:#4ade80">0.00 ETB</strong></div>
     <div class="ball" id="ball">--</div>
     <div class="strip" id="strip"></div>
+    <button type="button" id="drawn-more-btn" onclick="toggleDrawnMore()" style="display:none;margin:8px auto 0;background:#1e293b;color:#4ade80;border:1px solid #334155;border-radius:7px;padding:4px 12px;font-size:11px;font-weight:800">Show More (All 20)</button>
   </div>
   <div id="out-banner" class="banner"></div>
   <div id="board-wrap">
@@ -1123,6 +1114,13 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
       <span id="tcount" style="color:#4ade80;font-weight:800">0</span>
     </div>
     <div id="tickets-list"><div style="color:#9ca3af;margin-top:6px">No tickets placed in this round yet.</div></div>
+  </div>
+  <div class="box">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <strong>🎲 Recent Rounds History</strong>
+      <button type="button" id="inline-gh-more-btn" onclick="toggleInlineGhMore()" style="display:none;background:#1e293b;color:#4ade80;border:1px solid #334155;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:800">Show More</button>
+    </div>
+    <div id="inline-ghlist"><div style="color:#9ca3af;margin-top:6px">No completed rounds yet.</div></div>
   </div>
 </div>
 
@@ -1379,14 +1377,43 @@ function renderTickets(){
     let cls="tcard";
     if(roundDone){
       if(Number(tk.payout||0)>0){stHtml=`<span class="st-win">Won ${Number(tk.payout).toFixed(2)} ETB</span>`;cls+=" won-card";}
-      else{stHtml=`<span style="color:#9ca3af">Max: ${potWin.toFixed(2)} ETB</span> | <span class="st-lose">Please try again</span>`;}
+      else{stHtml=`<span style="color:#9ca3af">Max: ${potWin.toFixed(2)} ETB</span>`;}
     }
+    const mineBadge=tk.is_mine?` <span style="background:#16a34a;color:#fff;padding:1px 6px;border-radius:5px;font-size:10px;font-weight:900">YOU</span>`:"";
     return `<div class="${cls}">
-      <div class="tcard-top"><span><b>${tk.player}</b> • Bet <b>${Number(tk.bet).toFixed(0)} ETB</b></span><span>${stHtml}</span></div>
+      <div class="tcard-top"><span><b>${tk.player}</b>${mineBadge} • Bet <b>${Number(tk.bet).toFixed(0)} ETB</b></span><span>${stHtml}</span></div>
       <div class="tnums">${tk.picks.map(n=>`<span class="tnum${drawnSoFar.has(n)?" matched":""}">${n}</span>`).join("")}</div>
     </div>`;
   }).join("");
 }
+
+let inlineGhExpanded=false;
+function toggleInlineGhMore(){
+  inlineGhExpanded=!inlineGhExpanded;
+  renderInlineGameHistory();
+}
+function renderInlineGameHistory(){
+  const el=document.getElementById("inline-ghlist");
+  const btn=document.getElementById("inline-gh-more-btn");
+  if(!el)return;
+  const arr=(window._latestGameHistory||[]).slice(0,20);
+  if(!arr.length){
+    el.innerHTML='<div style="color:#9ca3af;margin-top:6px">No completed rounds yet.</div>';
+    if(btn)btn.style.display="none";
+    return;
+  }
+  const shown=inlineGhExpanded?arr:arr.slice(0,3);
+  el.innerHTML=shown.map(g=>`<div style="padding:6px 0;border-bottom:1px solid #232934"><div style="color:#4ade80;font-weight:800;font-size:12px;margin-bottom:4px">Round #${g.round} <span style="color:#9ca3af;font-weight:400">(${(g.drawn||[]).length} drawn)</span></div><div style="display:flex;flex-wrap:wrap;gap:4px">${(g.drawn||[]).map(n=>`<span class="tnum">${n}</span>`).join("")}</div></div>`).join("");
+  if(btn){
+    if(arr.length>3){
+      btn.style.display="inline-block";
+      btn.textContent=inlineGhExpanded?"Show Less":`Show More (${arr.length})`;
+    }else{
+      btn.style.display="none";
+    }
+  }
+}
+
 async function load(){
   try{
     const r=await fetch(`/api/state?uid=${encodeURIComponent(uid)}`);
@@ -1427,13 +1454,25 @@ async function load(){
       }
     }
     const depArr=(d.deposits||[]).slice(-20).reverse();
-    document.getElementById("deplist").innerHTML=depArr.length?depArr.map(x=>`<div style="padding:5px 0;border-bottom:1px solid #232934"><b>${Number(x.amount||0).toFixed(2)} ETB</b> | ${x.method} | ${x.tx} | ${x.date_label||""}</div>`).join(""):"No deposits yet.";
+    const depEl=document.getElementById("deplist");
+    if(depEl){
+      if(!depArr.length){
+        depEl.innerHTML="No deposits yet.";
+      }else{
+        const expDep=depEl.dataset.expanded==="1";
+        const shownDep=expDep?depArr:depArr.slice(0,3);
+        const depMoreBtn=depArr.length>3?`<button type="button" onclick="const p=this.parentElement;p.dataset.expanded=p.dataset.expanded==='1'?'0':'1';load();" style="margin-top:6px;background:#1e293b;color:#4ade80;border:1px solid #334155;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:800">${expDep?"Show Less (Top 3)":"Show More ("+depArr.length+")"}</button>`:"";
+        depEl.innerHTML=shownDep.map(x=>`<div style="padding:5px 0;border-bottom:1px solid #232934"><b>${Number(x.amount||0).toFixed(2)} ETB</b> | ${x.method} | ${x.tx||""} | <b>${x.status||"Approved"}</b> <span style="color:#9ca3af">${x.date_label||""}</span></div>`).join("")+depMoreBtn;
+      }
+    }
     const wdHistArr=(d.wds||[]).slice(-20).reverse();
     const hwEl=document.getElementById("hwlist");
     if(hwEl)hwEl.innerHTML=wdHistArr.length?wdHistArr.map(w=>`<div style="padding:5px 0;border-bottom:1px solid #232934">${w.id} | <b>${Number(w.amount||0).toFixed(2)} ETB</b> | ${w.method} (${w.dest}) | <b>${w.status}</b></div>`).join(""):"No withdraw history yet.";
     const betArr=(d.bets||[]).slice(-20).reverse();
     document.getElementById("hlist").innerHTML=betArr.length?betArr.map(x=>`<div style="padding:6px 0;border-bottom:1px solid #232934"><div>Round #${x.round||x.cycle||"-"} | Bet: <b>${x.bet} ETB</b> | Matches: <b>${x.matches}</b> | Win: <b style="color:#4ade80">${x.payout} ETB</b></div>${(x.picks&&x.picks.length)?`<div style="margin-top:3px;font-size:11px;color:#9ca3af">Picks: ${x.picks.join(", ")}</div>`:""}</div>`).join(""):"No bet history yet.";
     const ghArr=(d.game_history||[]).slice(0,20);
+    window._latestGameHistory=ghArr;
+    renderInlineGameHistory();
     document.getElementById("ghlist").innerHTML=ghArr.length?ghArr.map(g=>`<div style="padding:7px 0;border-bottom:1px solid #232934"><div style="color:#4ade80;font-weight:800;margin-bottom:4px">Round #${g.round} <span style="color:#9ca3af;font-weight:400">(${(g.drawn||[]).length} numbers)</span></div><div style="display:flex;flex-wrap:wrap;gap:4px">${(g.drawn||[]).map(n=>`<span class="tnum">${n}</span>`).join("")}</div></div>`).join(""):"No completed rounds yet.";
     document.getElementById("wlist").innerHTML=d.wds.length?d.wds.slice().reverse().map(w=>`<div style="padding:6px 0;border-bottom:1px solid #2b303b">${w.id} | ${w.method} (${w.dest}) | ${w.amount} ETB | <b>${w.status}</b>${w.status==="Pending"?`<br><button class="appb" onclick="appw('${w.id}')">Approve (Complete)</button>`:""}</div>`).join(""):"No withdraw requests yet.";
     const whEl=document.getElementById("whlist");
@@ -1441,7 +1480,15 @@ async function load(){
       const combinedWh=[];
       (d.deposits||[]).forEach(x=>combinedWh.push({ts:x.ts||0,html:`<div style="padding:5px 0;border-bottom:1px solid #232934">📥 <b>Deposit</b> ${Number(x.amount||0).toFixed(2)} ETB | ${x.method} | <b>${x.status||"Approved"}</b> <span style="color:#9ca3af">${x.date_label||""}</span></div>`}));
       (d.wds||[]).forEach(w=>combinedWh.push({ts:w.ts||0,html:`<div style="padding:5px 0;border-bottom:1px solid #232934">📤 <b>Withdraw</b> ${Number(w.amount||0).toFixed(2)} ETB | ${w.method} (${w.dest}) | <b>${w.status}</b></div>`}));
-      whEl.innerHTML=combinedWh.length?combinedWh.slice(-20).reverse().map(i=>i.html).join(""):"No wallet transactions yet.";
+      const sortedWh=combinedWh.slice(-20).reverse();
+      if(!sortedWh.length){
+        whEl.innerHTML="No wallet transactions yet.";
+      }else{
+        const expWh=whEl.dataset.expanded==="1";
+        const shownWh=expWh?sortedWh:sortedWh.slice(0,3);
+        const moreBtn=sortedWh.length>3?`<button type="button" onclick="const p=this.parentElement;p.dataset.expanded=p.dataset.expanded==='1'?'0':'1';load();" style="margin-top:6px;background:#1e293b;color:#4ade80;border:1px solid #334155;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:800">${expWh?"Show Less":"Show More ("+sortedWh.length+")"}</button>`:"";
+        whEl.innerHTML=shownWh.map(i=>i.html).join("")+moreBtn;
+      }
     }
   }catch(e){}
 }
@@ -1463,6 +1510,29 @@ async function lockBet(){
   clearSelectionsAndBoard();
   document.getElementById("gmsg").textContent=`✅ Bet locked (${bet} ETB on ${queued.picks.length} numbers). 20 numbers will be drawn when 01:00 ends.`;
 }
+let showAllDrawn=false;
+let lastWatchedForStrip=new Set();
+function toggleDrawnMore(){
+  showAllDrawn=!showAllDrawn;
+  renderDrawnStrip(lastWatchedForStrip);
+}
+function renderDrawnStrip(watchedSet){
+  lastWatchedForStrip=watchedSet||new Set();
+  const stripEl=document.getElementById("strip");
+  const btnEl=document.getElementById("drawn-more-btn");
+  if(!stripEl)return;
+  const arr=Array.from(drawnSoFar);
+  const visibleArr=showAllDrawn?arr:arr.slice(0,3);
+  stripEl.innerHTML=visibleArr.map(n=>`<span class="chip${lastWatchedForStrip.has(n)?" h":""}">${n}</span>`).join("");
+  if(btnEl){
+    if(arr.length>3){
+      btnEl.style.display="inline-block";
+      btnEl.textContent=showAllDrawn?"Show Less (Top 3)":`Show More (${arr.length} drawn)`;
+    }else{
+      btnEl.style.display="none";
+    }
+  }
+}
 function appendDrawnChipInstant(n, watchedSet, updateMainBall){
   if(drawnSoFar.has(n))return;
   drawnSoFar.add(n);
@@ -1470,10 +1540,7 @@ function appendDrawnChipInstant(n, watchedSet, updateMainBall){
     document.getElementById("ball").textContent=n;
   }
   document.getElementById("dprog").textContent=`${drawnSoFar.size} / 20`;
-  const ch=document.createElement("span");
-  ch.className="chip"+(watchedSet.has(n)?" h":"");
-  ch.textContent=n;
-  document.getElementById("strip").appendChild(ch);
+  renderDrawnStrip(watchedSet);
 }
 
 async function runRoundDraw(targetCycle, allowResync){
@@ -1535,24 +1602,18 @@ async function runRoundDraw(targetCycle, allowResync){
   renderTickets();
   const bn=document.getElementById("out-banner");
   const hasPlayed=Boolean(activeBet) || Number(d.my_bet||0)>0;
-  if(hasPlayed){
-    const pay=Number(d.payout||0);
+  const pay=Number(d.payout||0);
+  if(hasPlayed && pay>0){
     const mt=Number(d.matches||0);
     const hList=d.hits||[];
-    if(pay>0){
-      bn.className="banner winb";
-      bn.textContent=`🎉 Congratulations! You won ${pay.toFixed(2)} ETB (${mt} matches)!`;
-    }else{
-      bn.className="banner tryb";
-      bn.textContent=`Please try again — ${mt} matches`;
-    }
-    const suspMsg = (pay <= 0 && mt > 0)
-      ? ` <span style="color:#fbbf24">(So close! ${mt}/${activeBet.picks.length} matched!)</span>`
-      : (pay <= 0 ? ` <span style="color:#9ca3af">(Next round could hit!)</span>` : "");
-    document.getElementById("gmsg").innerHTML=`<b>Matches (${mt}):</b> ${hList.join(", ")||"None"} | <b>Win:</b> ${pay.toFixed(2)} ETB${suspMsg}`;
+    bn.className="banner winb";
+    bn.textContent=`🏆 WIN ${pay.toFixed(2)} ETB`;
+    document.getElementById("gmsg").innerHTML=`🏆 <b>WIN ${pay.toFixed(2)} ETB</b> | <b>Matches (${mt}):</b> ${hList.join(", ")}`;
     await new Promise(res=>setTimeout(res,4000));
   }else{
-    await new Promise(res=>setTimeout(res,2500));
+    bn.className="banner";
+    bn.textContent="";
+    await new Promise(res=>setTimeout(res,2000));
   }
   if(typeof d.balance==="number"){
     bal=d.balance;
@@ -1821,7 +1882,7 @@ def webhook():
         tg_answer_cb(cb_id, f"❌ Deposit {did} rejected.")
         tg(
             target_uid,
-            f"❌ Deposit Rejected! Your {amt:.2f} ETB ({m} / {tx}) deposit could not be verified by admin.",
+            f"❌ Not valid / accurate! Your {amt:.2f} ETB ({m} / {tx}) deposit details are not valid or accurate.",
             main_reply_kb(target_uid, base_url),
         )
         msg_obj = cb.get("message") or {}
@@ -2085,6 +2146,28 @@ def webhook():
   return jsonify({"ok": True})
 
 
+
+def sort_tickets_for_display(entries, viewer_uid):
+  mine = [e for e in entries if str(e.get("uid", "")) == str(viewer_uid)]
+  others = [e for e in entries if str(e.get("uid", "")) != str(viewer_uid)]
+  others_sorted = sorted(others, key=lambda x: float(x.get("bet", 0) or 0), reverse=True)
+  ordered = mine + others_sorted
+  return [
+      {
+          "player": e["player"],
+          "is_mine": str(e.get("uid", "")) == str(viewer_uid),
+          "picks": e["picks"],
+          "bet": e["bet"],
+          "max_win": round(
+              float(e["bet"]) * max(PAYTABLE.get(len(e["picks"]), {}).values() or [0.0]),
+              2,
+          ),
+          "payout": e.get("payout", 0.0),
+      }
+      for e in ordered[:25]
+  ]
+
+
 @app.route("/api/state")
 def api_state():
   uid = str(request.args.get("uid", "874411134")).strip()
@@ -2104,19 +2187,11 @@ def api_state():
     shown_cnt = 0
     show_result = False
 
-  public_tickets = [
-      {
-          "player": e["player"],
-          "picks": e["picks"],
-          "bet": e["bet"],
-          "max_win": round(
-              float(e["bet"]) * max(PAYTABLE.get(len(e["picks"]), {}).values() or [0.0]),
-              2,
-          ),
-          "payout": e["payout"] if show_result else 0.0,
-      }
-      for e in entries[-25:]
+  raw_entries_state = [
+      {**e, "payout": e["payout"] if show_result else 0.0}
+      for e in entries
   ]
+  public_tickets = sort_tickets_for_display(raw_entries_state, uid)
   my_entry = next((e for e in reversed(entries) if e["uid"] == uid), None)
 
   prev_cycle = c_num - 1
@@ -2185,19 +2260,7 @@ def api_reserve_bet():
       "payout": 0.0,
       "settled": False,
   })
-  public_tickets = [
-      {
-          "player": e["player"],
-          "picks": e["picks"],
-          "bet": e["bet"],
-          "max_win": round(
-              float(e["bet"]) * max(PAYTABLE.get(len(e["picks"]), {}).values() or [0.0]),
-              2,
-          ),
-          "payout": 0.0,
-      }
-      for e in ROUND_BETS[c_num][-25:]
-  ]
+  public_tickets = sort_tickets_for_display(ROUND_BETS[c_num], uid)
   return jsonify({
       "ok": True,
       "balance": u["balance"],
@@ -2215,7 +2278,12 @@ def api_play():
   c_num = int(req_cycle) if req_cycle is not None else st["cycle_num"]
   drawn, entries = settle_cycle_if_needed(c_num)
   u = get_u(uid)
-  my_entry = next((e for e in reversed(entries) if e["uid"] == uid), None)
+  my_entries = [e for e in entries if str(e.get("uid", "")) == uid]
+  my_entry = my_entries[-1] if my_entries else None
+  total_my_bet = round(sum(float(e.get("bet", 0.0) or 0.0) for e in my_entries), 2)
+  total_my_payout = round(sum(float(e.get("payout", 0.0) or 0.0) for e in my_entries), 2)
+  all_my_hits = sorted(list({int(h) for e in my_entries for h in (e.get("hits") or [])}))
+  total_my_matches = sum(int(e.get("matches", 0) or 0) for e in my_entries)
   public_tickets = [
       {
           "player": e["player"],
@@ -2235,10 +2303,11 @@ def api_play():
       "cycle_num": c_num,
       "drawn": drawn,
       "my_ticket": my_entry,
-      "my_bet": my_entry["bet"] if my_entry else 0.0,
-      "hits": my_entry["hits"] if my_entry else [],
-      "matches": my_entry["matches"] if my_entry else 0,
-      "payout": my_entry["payout"] if my_entry else 0.0,
+      "my_tickets": my_entries,
+      "my_bet": total_my_bet,
+      "hits": all_my_hits,
+      "matches": total_my_matches,
+      "payout": total_my_payout,
       "tickets": public_tickets,
   })
 
@@ -2395,6 +2464,181 @@ def verify_sms_strict(method, raw_sms, expected_amt):
   return "verified", ""
 
 
+
+OCR_API_KEY = (os.environ.get("OCR_API_KEY") or "K87899142388957").strip()
+
+
+def extract_text_from_screenshot(img_bytes, filename="screenshot.jpg"):
+  """Extract text from screenshot via local Tesseract (if present) or OCR.space API."""
+  # 1. Try local pytesseract if installed on host
+  try:
+    import io
+    from PIL import Image
+    import pytesseract
+    im = Image.open(io.BytesIO(img_bytes))
+    txt = pytesseract.image_to_string(im) or ""
+    if txt.strip():
+      return txt.strip(), ""
+  except Exception:
+    pass
+
+  # 2. Cloud OCR fallback (works out-of-the-box on Render without system binaries)
+  try:
+    resp = requests.post(
+        "https://api.ocr.space/parse/image",
+        data={
+            "apikey": OCR_API_KEY,
+            "language": "eng",
+            "isOverlayRequired": "false",
+            "OCREngine": "2",
+        },
+        files={"file": (filename or "screenshot.jpg", img_bytes, "image/jpeg")},
+        timeout=15,
+    )
+    if resp.ok:
+      data = resp.json() if resp.content else {}
+      parsed = data.get("ParsedResults") or []
+      combined = "\n".join(
+          str(p.get("ParsedText") or "") for p in parsed
+      ).strip()
+      if combined:
+        return combined, ""
+      err_msg = str(data.get("ErrorMessage") or "").strip()
+      if err_msg:
+        return "", err_msg
+  except Exception as e:
+    return "", str(e)[:80]
+  return "", "Could not read text from screenshot."
+
+
+def verify_screenshot_strict(method, img_bytes, expected_amt, filename="screenshot.jpg"):
+  """Strictly validate bank/provider, receiver account & name, amount, and date before notifying Admin."""
+  ocr_text, ocr_err = extract_text_from_screenshot(img_bytes, filename=filename)
+  if not ocr_text:
+    return (
+        "rejected",
+        "❌ Not valid / accurate! Could not clearly read the payment details from this screenshot. Please upload a clear Telebirr or CBE receipt screenshot.",
+        "",
+    )
+
+  up = ocr_text.upper()
+  low = ocr_text.lower()
+
+  # Reject other banks (Abyssinia, Awash, Dashen, Cooperative, Nib, Wegagen, etc.)
+  other_banks = [
+      "ABYSSINIA", "BANK OF ABYSSINIA", "BOA",
+      "AWASH BANK", "DASHEN BANK", "COOPERATIVE BANK",
+      "NIB INTERNATIONAL", "WEGAGEN", "HIBRET BANK",
+      "ZEMEN BANK", "BUNNA BANK", "BERHAN BANK", "ABAY BANK",
+  ]
+  if any(ob in up for ob in other_banks):
+    return (
+        "rejected",
+        f"❌ Not valid / accurate! Only {method} receipts are accepted — screenshots from other banks are rejected.",
+        "",
+    )
+
+  is_cbe_shot = (
+      "COMMERCIAL BANK OF ETHIOPIA" in up
+      or "CBE" in up
+      or "APPS.CBE.COM.ET" in up
+      or re.search(r"\bFT[A-Z0-9]{6,18}\b", up) is not None
+  )
+  is_tb_shot = (
+      "TELEBIRR" in up
+      or "ETHIO TELECOM" in up
+      or "855" in up
+  )
+
+  if method == "Telebirr":
+    if is_cbe_shot and not is_tb_shot:
+      return (
+          "rejected",
+          "❌ Not valid / accurate! You selected Telebirr, but uploaded a CBE receipt screenshot.",
+          "",
+      )
+    if not is_tb_shot:
+      return (
+          "rejected",
+          "❌ Not valid / accurate! This screenshot is not a valid Telebirr payment receipt.",
+          "",
+      )
+  elif method == "CBE":
+    if is_tb_shot and not is_cbe_shot:
+      return (
+          "rejected",
+          "❌ Not valid / accurate! You selected CBE, but uploaded a Telebirr receipt screenshot.",
+          "",
+      )
+    if not is_cbe_shot:
+      return (
+          "rejected",
+          "❌ Not valid / accurate! This screenshot is not a valid CBE payment receipt.",
+          "",
+      )
+
+  # Check receiver account number & receiver full name
+  tb_num, tb_owner = split_account_and_name(TELEBIRR_ACCOUNT, TELEBIRR_NAME)
+  cbe_num, cbe_owner = split_account_and_name(CBE_ACCOUNT, CBE_NAME)
+  target_acc = (tb_num if method == "Telebirr" else cbe_num).strip()
+  target_owner = (tb_owner if method == "Telebirr" else cbe_owner).strip().lower()
+
+  acc_digits = re.sub(r"\D", "", target_acc)
+  body_digits = re.sub(r"\D", "", ocr_text)
+  acc_matched = False
+  if acc_digits and len(acc_digits) >= 6 and acc_digits in body_digits:
+    acc_matched = True
+  elif len(acc_digits) >= 8 and acc_digits[-4:] in body_digits and ("*" in ocr_text or "X" in up):
+    acc_matched = True
+
+  owner_matched = False
+  if target_owner and len(target_owner) >= 4:
+    name_parts = [p for p in re.split(r"\s+", target_owner) if len(p) >= 3]
+    if name_parts and all(part in low for part in name_parts):
+      owner_matched = True
+
+  if not (acc_matched and owner_matched):
+    return (
+        "rejected",
+        f"❌ Not valid / accurate! Receiver account ({target_acc}) or account name ({target_owner.title()}) does not match our {method} account.",
+        "",
+    )
+
+  # Check exact amount match (e.g., 100 ETB requested vs 1,000 ETB screenshot -> rejected!)
+  amt_matches = re.findall(
+      r"(?:ETB|BIRR)\s*([0-9,]+(?:\.[0-9]{1,2})?)|([0-9,]+(?:\.[0-9]{1,2})?)\s*(?:ETB|BIRR)",
+      up,
+  )
+  found_amounts = []
+  for g1, g2 in amt_matches:
+    raw_num = (g1 or g2 or "").replace(",", "").strip()
+    if raw_num:
+      try:
+        found_amounts.append(float(raw_num))
+      except ValueError:
+        pass
+  if not found_amounts or not any(abs(x - float(expected_amt)) < 0.01 for x in found_amounts):
+    return (
+        "rejected",
+        f"❌ Not valid / accurate! The amount on the screenshot does not match your requested {float(expected_amt):.2f} ETB deposit.",
+        "",
+    )
+
+  # Check today's date (EAT) so old/yesterday screenshots cannot be reused
+  today_eat = datetime.now(EAT).date()
+  dates_found = _extract_sms_dates_eat(ocr_text)
+  if dates_found and any(dt != today_eat for dt in dates_found):
+    return (
+        "rejected",
+        f"❌ Not valid / accurate! The receipt date does not match today ({today_eat.isoformat()} EAT).",
+        "",
+    )
+
+  # Extract reference / FT code if present to prevent duplicate receipt reuse
+  tx_code = extract_tx_code(method, ocr_text)
+  return "verified", "", tx_code
+
+
 @app.route("/api/deposit", methods=["POST"])
 def api_deposit():
   d = request.get_json(force=True)
@@ -2425,15 +2669,24 @@ def api_deposit():
   if hash_key in USED_TX:
     return jsonify({"ok": False, "msg": "⚠️ Duplicate screenshot! This payment screenshot has already been submitted."})
 
+  # Strictly verify bank/provider, receiver account & name, exact amount, and date BEFORE sending to Admin
+  v_status, v_msg, detected_tx = verify_screenshot_strict(m, img_bytes, amt, filename=fname)
+  if v_status != "verified":
+    return jsonify({"ok": False, "msg": v_msg})
+
+  if detected_tx and (detected_tx.upper() in USED_TX or f"TX:{detected_tx.upper()}" in USED_TX):
+    return jsonify({"ok": False, "msg": "⚠️ Duplicate transaction! This payment receipt has already been used."})
+
   did = "DEP-" + uuid.uuid4().hex[:6].upper()
   now_ts = int(time.time())
   date_lbl = datetime.now(EAT).strftime("%Y-%m-%d %H:%M")
+  ref_label = detected_tx if detected_tx else f"IMG-{img_hash}"
 
   PENDING_DEPOSITS[did] = {
       "id": did,
       "uid": uid,
       "method": m,
-      "tx": f"IMG-{img_hash}",
+      "tx": ref_label,
       "img_key": hash_key,
       "amount": amt,
       "filename": fname,
@@ -2444,7 +2697,7 @@ def api_deposit():
       "id": did,
       "amount": amt,
       "method": m,
-      "tx": fname,
+      "tx": ref_label,
       "date_label": date_lbl,
       "status": "In Process",
       "ts": now_ts,
@@ -2458,14 +2711,15 @@ def api_deposit():
       ]]
   }
   caption_txt = (
-      f"💳 New Deposit Screenshot (In Process)\n"
+      f"💳 Verified Deposit Screenshot (In Process)\n"
       f"ID: {did}\n"
       f"Customer ID: {uid}\n"
       f"Method: {m}\n"
+      f"Ref / TX: {ref_label}\n"
       f"Amount: {amt:.2f} ETB\n"
-      f"File: {fname}"
+      f"✅ Auto-Check: Bank, Account, Name & Amount Matched"
   )
-  admin_target = ADMIN_CHAT_ID or resolve_internal_target()
+  admin_target = ADMIN_CHAT_ID or "8865329771"
   sent_photo = False
   if admin_target:
     sent_photo = tg_photo(admin_target, img_bytes, caption=caption_txt, kb=dep_kb)
@@ -2476,7 +2730,7 @@ def api_deposit():
       "ok": True,
       "pending": True,
       "balance": u["balance"],
-      "msg": f"⏳ Deposit ({did}) for {amt:.2f} ETB is in process. Once Admin approves your screenshot, your balance will be updated.",
+      "msg": f"⏳ Deposit ({did}) for {amt:.2f} ETB is in process. Your balance will update once approved.",
   })
 
 
