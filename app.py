@@ -79,25 +79,25 @@ TOP_WINNERS = []  # list of dicts: {"player": str, "amount": float, "round": int
 
 
 def get_top_winners_feed():
-  # Combine real big winners with realistic masked winners so the top banner always shows 5 exciting winners
+  # Combine real big winners with occasional showcase winners (including ~10,000 ETB entries)
+  # so the top banner stays lively even when there are no real winners yet.
   real_sorted = sorted(
       [w for w in TOP_WINNERS if float(w.get("amount", 0)) > 0],
       key=lambda x: float(x.get("amount", 0)),
       reverse=True,
   )[:5]
-  if len(real_sorted) >= 5:
-    return real_sorted
-  # Deterministic rotating showcase winners (masked IDs + realistic ETB payouts) to fill up to 5 slots
-  hour_bucket = int(time.time() // 1800)
-  rng = random.Random(f"ethio-keno-top-winners-{hour_bucket}")
-  prefixes = ["6***4", "7***9", "5***2", "8***1", "9***7", "1***8", "3***5", "4***6"]
-  amounts = [12500.0, 8400.0, 6000.0, 4500.0, 3200.0, 2500.0, 1800.0, 1500.0]
+  slot_bucket = int(time.time() // 180)
+  rng = random.Random(f"ethio-keno-top-winners-{slot_bucket}")
+  prefixes = ["6***4", "7***9", "5***2", "8***1", "9***7", "1***8", "3***5", "4***6", "2***3"]
+  amounts = [10000.0, 12500.0, 8400.0, 6000.0, 4500.0, 3200.0, 2500.0, 1800.0, 10000.0]
   rng.shuffle(prefixes)
   rng.shuffle(amounts)
-  merged = list(real_sorted)
+
+  # Keep real winners, and inject showcase entries when real list is short or periodically
+  merged = list(real_sorted[:3]) if len(real_sorted) >= 4 else list(real_sorted)
   used_players = {x["player"] for x in merged}
   for p_id, amt in zip(prefixes, amounts):
-    if len(merged) >= 5:
+    if len(merged) >= 6:
       break
     if p_id in used_players:
       continue
@@ -106,10 +106,10 @@ def get_top_winners_feed():
         "player": p_id,
         "amount": amt,
         "round": max(1, cycle_to_round_num(current_cycle_state()["cycle_num"]) - rng.randint(1, 15)),
-        "ts": int(time.time()) - rng.randint(60, 1800),
+        "ts": int(time.time()) - rng.randint(30, 900),
     })
   merged.sort(key=lambda x: float(x.get("amount", 0)), reverse=True)
-  return merged[:5]
+  return merged[:6]
 
 
 def load_persistent_state():
@@ -282,6 +282,24 @@ def get_bot_username():
   except Exception:
     pass
   return BOT_USERNAME_CACHE
+
+
+DEP_START_HOUR_EAT = int(os.environ.get("DEP_START_HOUR_EAT", "7"))
+DEP_END_HOUR_EAT = int(os.environ.get("DEP_END_HOUR_EAT", "1"))
+
+
+def is_deposit_hours(now_dt=None):
+  if now_dt is None:
+    now_dt = datetime.now(EAT)
+  h = now_dt.hour
+  start_h = DEP_START_HOUR_EAT % 24
+  end_h = DEP_END_HOUR_EAT % 24
+  if start_h == end_h:
+    return True
+  if start_h < end_h:
+    return start_h <= h < end_h
+  # Wraps past midnight (e.g., 07:00 EAT to 01:00 EAT)
+  return h >= start_h or h < end_h
 
 
 def is_wd_hours():
@@ -1010,13 +1028,14 @@ PAGE = """<!DOCTYPE html>
 .top{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#171b22;border-bottom:1px solid #262c36}
 .pill{background:#222834;padding:5px 10px;border-radius:99px;font-size:12px;font-weight:700;color:#4ade80}
 .sub{display:flex;justify-content:space-between;align-items:center;padding:7px 12px;background:#13171d;font-size:12px;color:#9ca3af}
-.wbar{display:flex;align-items:center;gap:8px;padding:6px 10px;background:linear-gradient(90deg,#1e1b4b 0%,#064e3b 50%,#4c1d95 100%);border-bottom:1px solid #34d399;font-size:11px;overflow:hidden;position:relative}
-.wbadge{background:linear-gradient(135deg,#facc15,#f59e0b);color:#111827;font-weight:900;padding:3px 8px;border-radius:6px;white-space:nowrap;font-size:10px;z-index:2;box-shadow:0 0 8px rgba(250,204,21,0.45)}
+.wbar{display:flex;align-items:center;gap:8px;padding:7px 10px;background:linear-gradient(90deg,#1e1b4b 0%,#0f172a 48%,#1e1b4b 100%);border-bottom:1px solid #334155;font-size:12.5px;overflow:hidden;position:relative}
+.wbadge{background:linear-gradient(135deg,#f59e0b,#d97706);color:#111827;font-weight:900;padding:4px 9px;border-radius:7px;white-space:nowrap;font-size:11.5px;z-index:2;box-shadow:0 0 10px rgba(245,158,11,0.45)}
 .wmarquee{flex:1;overflow:hidden;white-space:nowrap;position:relative}
-.wtrack{display:inline-flex;gap:18px;align-items:center;white-space:nowrap;animation:wscrollAnim 18s linear infinite}
+.wtrack{display:inline-flex;align-items:center;white-space:nowrap;will-change:transform;animation:wscrollAnim 22s linear infinite}
 .wtrack:hover{animation-play-state:paused}
-@keyframes wscrollAnim{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
-.witem{display:inline-flex;align-items:center;gap:5px;background:rgba(15,23,42,0.72);border:1px solid rgba(74,222,128,0.35);padding:2px 8px;border-radius:99px;color:#f8fafc;font-weight:700}
+.wset{display:inline-flex;align-items:center;gap:12px;padding-right:12px}
+@keyframes wscrollAnim{0%{transform:translate3d(0,0,0)}100%{transform:translate3d(-50%,0,0)}}
+.witem{display:inline-flex;align-items:center;gap:6px;background:rgba(15,23,42,0.92);border:1px solid rgba(250,204,21,0.45);padding:4px 11px;border-radius:99px;color:#f8fafc;font-size:12.5px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.25)}
 .witem .rk{color:#facc15;font-weight:900}.witem .pid{color:#38bdf8;font-weight:800}.witem .amt{color:#4ade80;font-weight:900}
 .tm{background:#22c55e;color:#061209;font-weight:800;padding:3px 9px;border-radius:7px}
 .stage{margin:8px 12px;padding:12px 10px;border-radius:14px;background:radial-gradient(circle at top,#1c2430 0%,#12161d 75%);border:1px solid #262d38;text-align:center}
@@ -1119,7 +1138,7 @@ input,select{width:100%;padding:9px;margin:5px 0 9px;border-radius:8px;border:1p
       <strong style="font-size:16px">💳 Deposit</strong>
       <span style="background:#1e293b;color:#fbbf24;padding:3px 9px;border-radius:99px;font-size:11px;font-weight:800">● Awaiting payment</span>
     </div>
-    <div style="font-size:11px;color:#9ca3af;margin-top:4px">Same-day date & time • Exact amount • Receiver account & name must match</div>
+    <div style="font-size:11px;color:#9ca3af;margin-top:4px">Approval Hours: <b style="color:#4ade80">07:00 AM – 01:00 AM EAT</b> (ጠዋት 1 ሰዓት – ሌሊት 7 ሰዓት). Deposits sent after hours are accepted & approved at <b>07:00 AM EAT (ጠዋት 1 ሰዓት)</b>.</div>
     <div id="dep-step1">
       <select id="dm"><option value="Telebirr">Telebirr</option><option value="CBE">CBE</option></select>
       <input type="number" id="da" placeholder="Enter amount (min 50 ETB)" min="50" step="any">
@@ -1309,6 +1328,7 @@ function ui(){
 }
 
 function tab(k){["game","wallet","hist","rules"].forEach(x=>{document.getElementById("p-"+x).classList.toggle("active",x===k);document.getElementById("n-"+x).classList.toggle("active",x===k);});load();}
+let depositOpenNow=true;
 function showDepositStep2(){
   const amt=Number(document.getElementById("da").value||0);
   if(!amt||amt<50)return alert("Minimum deposit is 50 ETB.");
@@ -1359,6 +1379,7 @@ async function load(){
     const r=await fetch(`/api/state?uid=${encodeURIComponent(uid)}`);
     const d=await r.json();
     bal=d.balance;
+    if(typeof d.deposit_open==="boolean"){depositOpenNow=d.deposit_open;}
     if(typeof d.server_now==="number"){serverOffsetMs=(d.server_now*1000)-Date.now();}
     if(typeof d.cycle_total_sec==="number"){
       syncTiming={
@@ -1385,8 +1406,12 @@ async function load(){
     renderTickets();
     const twBar=document.getElementById("top-winners-bar");
     if(twBar && Array.isArray(d.top_winners) && d.top_winners.length){
-      const itemsHtml=d.top_winners.map((w,idx)=>`<span class="witem"><span class="rk">#${idx+1}</span> ID <span class="pid">${w.player}</span> won <span class="amt">${Number(w.amount||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} ETB</span></span>`).join("");
-      twBar.innerHTML=itemsHtml + itemsHtml;
+      const singleSet=d.top_winners.map((w,idx)=>`<span class="witem"><span class="rk">#${idx+1}</span> ID <span class="pid">${w.player}</span> won <span class="amt">${Number(w.amount||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} ETB</span></span>`).join("");
+      const newHtml=`<span class="wset">${singleSet}</span><span class="wset">${singleSet}</span>`;
+      if(twBar.dataset.rendered!==newHtml){
+        twBar.dataset.rendered=newHtml;
+        twBar.innerHTML=newHtml;
+      }
     }
     const depArr=(d.deposits||[]).slice(-20).reverse();
     document.getElementById("deplist").innerHTML=depArr.length?depArr.map(x=>`<div style="padding:5px 0;border-bottom:1px solid #232934"><b>${Number(x.amount||0).toFixed(2)} ETB</b> | ${x.method} | ${x.tx} | ${x.date_label||""}</div>`).join(""):"No deposits yet.";
@@ -1685,7 +1710,7 @@ def webhook():
     elif data.startswith("approve_dep:"):
       did = data.split(":", 1)[1].strip()
       dep_obj = PENDING_DEPOSITS.get(did)
-      if dep_obj and dep_obj.get("status") == "Pending":
+      if dep_obj and dep_obj.get("status") in ("Pending", "Scheduled (07:00 AM EAT)"):
         dep_obj["status"] = "Approved"
         target_uid = dep_obj["uid"]
         amt = float(dep_obj["amount"])
@@ -1740,7 +1765,7 @@ def webhook():
     elif data.startswith("reject_dep:"):
       did = data.split(":", 1)[1].strip()
       dep_obj = PENDING_DEPOSITS.get(did)
-      if dep_obj and dep_obj.get("status") == "Pending":
+      if dep_obj and dep_obj.get("status") in ("Pending", "Scheduled (07:00 AM EAT)"):
         dep_obj["status"] = "Rejected"
         target_uid = dep_obj["uid"]
         amt = float(dep_obj["amount"])
@@ -2066,6 +2091,8 @@ def api_state():
       "shown_count": shown_cnt,
       "show_result": show_result,
       "wds": list(WITHDRAWALS.values()) if adm else u["wds"],
+      "deposit_open": is_deposit_hours(),
+      "deposit_hours_label": "07:00 AM – 01:00 AM EAT (ጠዋት 1 ሰዓት – ሌሊት 7 ሰዓት)",
       "is_admin": adm,
       "server_now": st["server_now"],
       "cycle_num": c_num,
@@ -2324,6 +2351,7 @@ def verify_sms_strict(method, raw_sms, expected_amt):
 @app.route("/api/deposit", methods=["POST"])
 def api_deposit():
   d = request.get_json(force=True)
+  in_dep_hours = is_deposit_hours()
   uid = str(d.get("uid", "874411134")).strip()
   m = str(d.get("method", "Telebirr")).strip()
   raw_sms = str(d.get("sms_text") or d.get("tx") or "").strip()
@@ -2363,6 +2391,12 @@ def api_deposit():
   check_summary = "✅ Auto-check: Format & non-duplicate OK" if sms_status == "verified" else f"⚠️ Note: {reason}"
 
   did = "DEP-" + uuid.uuid4().hex[:6].upper()
+  dep_status_label = "Pending" if in_dep_hours else "Scheduled (07:00 AM EAT)"
+  schedule_note = (
+      "Immediate approval window (07:00 AM – 01:00 AM EAT)"
+      if in_dep_hours
+      else "Received outside active approval window — will be approved at 07:00 AM EAT (ጠዋት 1 ሰዓት)"
+  )
   PENDING_DEPOSITS[did] = {
       "id": did,
       "uid": uid,
@@ -2371,9 +2405,10 @@ def api_deposit():
       "amount": amt,
       "sms_text": raw_sms,
       "url_key": url_key,
-      "status": "Pending",
+      "status": dep_status_label,
       "created_ts": int(time.time()),
       "check_note": check_summary,
+      "schedule_note": schedule_note,
   }
   save_persistent_state()
 
@@ -2385,24 +2420,28 @@ def api_deposit():
   }
   notify_internal_kb(
       (
-          f"💳 New Deposit Request (Admin Approval Required)\n"
+          f"💳 New Deposit Request ({dep_status_label})\n"
           f"ID: {did}\n"
           f"Customer ID: {uid}\n"
           f"Method: {m}\n"
           f"FT / Ref ID: {tx}\n"
           f"Amount: {amt:.2f} ETB\n"
+          f"Window: {schedule_note}\n"
           f"{check_summary}\n"
           f"SMS / Details: {raw_sms[:400]}"
       ),
       dep_kb,
   )
+  user_msg = (
+      f"⏳ Deposit request ({did}) for {amt:.2f} ETB ({m} / {tx}) received and sent to Admin for approval."
+      if in_dep_hours
+      else f"⏰ Deposit ({did}) for {amt:.2f} ETB ({m} / {tx}) is received! Active deposit & approval hours are 07:00 AM – 01:00 AM EAT (ጠዋት 1 ሰዓት – ሌሊት 7 ሰዓት) — your deposit will be approved at 07:00 AM EAT (ጠዋት 1 ሰዓት)."
+  )
   return jsonify({
       "ok": True,
       "pending": True,
       "balance": u["balance"],
-      "msg": (
-          f"⏳ Deposit request ({did}) for {amt:.2f} ETB ({m} / {tx}) sent to Admin for approval."
-      ),
+      "msg": user_msg,
   })
 
 
